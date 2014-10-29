@@ -28,6 +28,7 @@
 #include <linux/async.h>
 #include <linux/suspend.h>
 #include <linux/timer.h>
+#include <linux/wakeup_reason.h>
 
 #include "../base.h"
 #include "power.h"
@@ -889,6 +890,7 @@ static int device_suspend_noirq(struct device *dev, pm_message_t state)
 int dpm_suspend_noirq(pm_message_t state)
 {
 	ktime_t starttime = ktime_get();
+	char suspend_abort[MAX_SUSPEND_ABORT_LEN];
 	int error = 0;
 
 	suspend_device_irqs();
@@ -913,15 +915,106 @@ int dpm_suspend_noirq(pm_message_t state)
 		if (!list_empty(&dev->power.entry))
 			list_move(&dev->power.entry, &dpm_noirq_list);
 		put_device(dev);
+
+		if (pm_wakeup_pending()) {
+			pm_get_active_wakeup_sources(suspend_abort,
+				MAX_SUSPEND_ABORT_LEN);
+			log_suspend_abort_reason(suspend_abort);
+			error = -EBUSY;
+			break;
+		}
 	}
 	mutex_unlock(&dpm_list_mtx);
 	if (error)
 		dpm_resume_noirq(resume_event(state));
 	else
+		dpm_show_time(starttime, state, "noirq");
+	return error;
+}
+
+/**
+ * device_suspend_late - Execute a "late suspend" callback for given device.
+ * @dev: Device to handle.
+ * @state: PM transition of the system being carried out.
+ *
+ * Runtime PM is disabled for @dev while this function is being executed.
+ */
+static int device_suspend_late(struct device *dev, pm_message_t state)
+{
+	pm_callback_t callback = NULL;
+	char *info = NULL;
+
+	if (dev->pm_domain) {
+		info = "late power domain ";
+		callback = pm_late_early_op(&dev->pm_domain->ops, state);
+	} else if (dev->type && dev->type->pm) {
+		info = "late type ";
+		callback = pm_late_early_op(dev->type->pm, state);
+	} else if (dev->class && dev->class->pm) {
+		info = "late class ";
+		callback = pm_late_early_op(dev->class->pm, state);
+	} else if (dev->bus && dev->bus->pm) {
+		info = "late bus ";
+		callback = pm_late_early_op(dev->bus->pm, state);
+	}
+
+	if (!callback && dev->driver && dev->driver->pm) {
+		info = "late driver ";
+		callback = pm_late_early_op(dev->driver->pm, state);
+	}
+
+	return dpm_run_callback(callback, dev, state, info);
+}
+
+/**
+ * dpm_suspend_late - Execute "late suspend" callbacks for all devices.
+ * @state: PM transition of the system being carried out.
+ */
+static int dpm_suspend_late(pm_message_t state)
+{
+	ktime_t starttime = ktime_get();
+	char suspend_abort[MAX_SUSPEND_ABORT_LEN];
+	int error = 0;
+
+	mutex_lock(&dpm_list_mtx);
+	while (!list_empty(&dpm_suspended_list)) {
+		struct device *dev = to_device(dpm_suspended_list.prev);
+
+		get_device(dev);
+		mutex_unlock(&dpm_list_mtx);
+
+		error = device_suspend_late(dev, state);
+
+		mutex_lock(&dpm_list_mtx);
+		if (error) {
+			pm_dev_err(dev, state, " late", error);
+			suspend_stats.failed_suspend_late++;
+			dpm_save_failed_step(SUSPEND_SUSPEND_LATE);
+			dpm_save_failed_dev(dev_name(dev));
+			put_device(dev);
+			break;
+		}
+		if (!list_empty(&dev->power.entry))
+			list_move(&dev->power.entry, &dpm_late_early_list);
+		put_device(dev);
+
+		if (pm_wakeup_pending()) {
+			pm_get_active_wakeup_sources(suspend_abort,
+				MAX_SUSPEND_ABORT_LEN);
+			log_suspend_abort_reason(suspend_abort);
+			error = -EBUSY;
+			break;
+		}
+	}
+	mutex_unlock(&dpm_list_mtx);
+	if (error)
+		dpm_resume_early(resume_event(state));
+	else
 		dpm_show_time(starttime, state, "late");
 	return error;
 }
 EXPORT_SYMBOL_GPL(dpm_suspend_noirq);
+
 
 /**
  * legacy_suspend - Execute a legacy (bus or class) suspend callback for device.
@@ -956,6 +1049,7 @@ static int __device_suspend(struct device *dev, pm_message_t state, bool async)
 	int error = 0;
 	struct timer_list timer;
 	struct dpm_drv_wd_data data;
+	char suspend_abort[MAX_SUSPEND_ABORT_LEN];
 
 	dpm_wait_for_children(dev, async);
 
@@ -975,7 +1069,13 @@ static int __device_suspend(struct device *dev, pm_message_t state, bool async)
 		pm_wakeup_event(dev, 0);
 
 	if (pm_wakeup_pending()) {
+<<<<<<< HEAD
 		pm_runtime_put_sync(dev);
+=======
+		pm_get_active_wakeup_sources(suspend_abort,
+			MAX_SUSPEND_ABORT_LEN);
+		log_suspend_abort_reason(suspend_abort);
+>>>>>>> e532467... power: log the last suspend abort reason.
 		async_error = -EBUSY;
 		return 0;
 	}
