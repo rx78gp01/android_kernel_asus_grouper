@@ -1084,6 +1084,7 @@ static void __init tegra_grouper_init(void)
 	grouper_misc_init();
 	tegra_thermal_init(&thermal_data);
 	tegra_clk_init_from_table(grouper_clk_init_table);
+	grouper_pinmux_init();
 	grouper_misc_reset();
 	grouper_booting_info();
 	grouper_i2c_init();
@@ -1139,17 +1140,11 @@ static void __init tegra_grouper_reserve(void)
 	grouper_ramconsole_reserve(SZ_1M);
 }
 
-static void __init tegra_grouper_init_early(void)
-{
-	tegra_init_early();
-	grouper_pinmux_init();
-}
-
 MACHINE_START(GROUPER, "grouper")
 	.boot_params	= 0x80000100,
 	.map_io		= tegra_map_common_io,
 	.reserve	= tegra_grouper_reserve,
-	.init_early	= tegra_grouper_init_early,
+	.init_early	= tegra_init_early,
 	.init_irq	= tegra_init_irq,
 	.timer		= &tegra_timer,
 	.init_machine	= tegra_grouper_init,

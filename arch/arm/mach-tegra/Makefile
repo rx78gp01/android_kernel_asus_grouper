@@ -28,8 +28,6 @@ obj-y                                   += pm.o
 obj-$(CONFIG_TEGRA_WDT_RECOVERY)        += wdt-recovery.o
 obj-$(CONFIG_PM_SLEEP)                  += pm-irq.o
 obj-y                                   += gic.o
-#obj-y                           		+= otgfi.o          # tmtmtm
-obj-$(CONFIG_USBHOST)              	    += usbhost.o        # tmtmtm
 
 
 obj-y                                   += sleep.o
@@ -81,11 +79,7 @@ obj-y                                   += reset.o
 obj-$(CONFIG_TEGRA_SYSTEM_DMA)          += dma.o
 obj-$(CONFIG_CPU_FREQ)                  += cpu-tegra.o
 ifeq ($(CONFIG_TEGRA_AUTO_HOTPLUG),y)
-ifeq ($(CONFIG_CPUQUIET_FRAMEWORK),y)
-obj-$(CONFIG_ARCH_TEGRA_3x_SOC)         += cpuquiet.o
-else
 obj-$(CONFIG_ARCH_TEGRA_3x_SOC)         += cpu-tegra3.o
-endif
 endif
 obj-$(CONFIG_TEGRA_PCI)                 += pcie.o
 obj-$(CONFIG_USB_SUPPORT)               += usb_phy.o
