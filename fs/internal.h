@@ -15,6 +15,7 @@ struct super_block;
 struct file_system_type;
 struct linux_binprm;
 struct path;
+struct mount;
 
 /*
  * block_dev.c
@@ -60,10 +61,9 @@ extern int check_unsafe_exec(struct linux_binprm *);
  * namespace.c
  */
 extern int copy_mount_options(const void __user *, unsigned long *);
-extern int copy_mount_string(const void __user *, char **);
+extern char *copy_mount_string(const void __user *);
 
 extern unsigned int mnt_get_count(struct vfsmount *mnt);
-extern struct vfsmount *__lookup_mnt(struct vfsmount *, struct dentry *, int);
 extern struct vfsmount *lookup_mnt(struct path *);
 extern void mnt_set_mountpoint(struct vfsmount *, struct dentry *,
 				struct vfsmount *);
@@ -72,12 +72,11 @@ extern void umount_tree(struct vfsmount *, int, struct list_head *);
 extern struct vfsmount *copy_tree(struct vfsmount *, struct dentry *, int);
 extern int finish_automount(struct vfsmount *, struct path *);
 
-extern void mnt_make_longterm(struct vfsmount *);
-extern void mnt_make_shortterm(struct vfsmount *);
+extern int sb_prepare_remount_readonly(struct super_block *);
 
 extern void __init mnt_init(void);
 
-DECLARE_BRLOCK(vfsmount_lock);
+extern struct lglock vfsmount_lock;
 
 
 /*

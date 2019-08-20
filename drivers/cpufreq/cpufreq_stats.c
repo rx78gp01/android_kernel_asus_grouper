@@ -612,7 +612,7 @@ static int cpufreq_stat_notifier_policy(struct notifier_block *nb,
 
 	ret = cpufreq_stats_create_table(policy, table, count);
 	if (ret)
-		return ret;
+		pr_debug("%s: create table failed, ret=%d\n", __func__, ret);
 	return 0;
 }
 
@@ -696,6 +696,7 @@ static int __cpuinit cpufreq_stat_cpu_callback(struct notifier_block *nfb,
 		cpufreq_update_policy(cpu);
 		break;
 	case CPU_DOWN_PREPARE:
+	case CPU_DOWN_PREPARE_FROZEN:
 		cpufreq_stats_free_sysfs(cpu);
 		break;
 	case CPU_DEAD:

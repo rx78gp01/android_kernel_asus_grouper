@@ -23,11 +23,6 @@ struct timer_list {
 
 	int slack;
 
-#ifdef CONFIG_TIMER_STATS
-	int start_pid;
-	void *start_site;
-	char start_comm[16];
-#endif
 #ifdef CONFIG_LOCKDEP
 	struct lockdep_map lockdep_map;
 #endif

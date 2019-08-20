@@ -97,12 +97,18 @@ static struct pid_namespace *create_pid_namespace(struct pid_namespace *parent_p
 	for (i = 1; i < PIDMAP_ENTRIES; i++)
 		atomic_set(&ns->pidmap[i].nr_free, BITS_PER_PAGE);
 
-	err = pid_ns_prepare_proc(ns);
+	err = proc_alloc_inum(&ns->proc_inum);
 	if (err)
 		goto out_put_parent_pid_ns;
 
+	err = pid_ns_prepare_proc(ns);
+	if (err)
+		goto out_free_proc_inum;
+
 	return ns;
 
+out_free_proc_inum:
+	proc_free_inum(ns->proc_inum);
 out_put_parent_pid_ns:
 	put_pid_ns(parent_pid_ns);
 out_free_map:
@@ -117,18 +123,20 @@ static void destroy_pid_namespace(struct pid_namespace *ns)
 {
 	int i;
 
+	proc_free_inum(ns->proc_inum);
 	for (i = 0; i < PIDMAP_ENTRIES; i++)
 		kfree(ns->pidmap[i].page);
 	kmem_cache_free(pid_ns_cachep, ns);
 }
 
-struct pid_namespace *copy_pid_ns(unsigned long flags, struct pid_namespace *old_ns)
+struct pid_namespace *copy_pid_ns(unsigned long flags,
+	struct pid_namespace *default_ns, struct pid_namespace *active_ns)
 {
 	if (!(flags & CLONE_NEWPID))
-		return get_pid_ns(old_ns);
+		return get_pid_ns(default_ns);
 	if (flags & (CLONE_THREAD|CLONE_PARENT))
 		return ERR_PTR(-EINVAL);
-	return create_pid_namespace(old_ns);
+	return create_pid_namespace(active_ns);
 }
 
 void free_pid_ns(struct kref *kref)
@@ -146,16 +154,20 @@ void free_pid_ns(struct kref *kref)
 
 void zap_pid_ns_processes(struct pid_namespace *pid_ns)
 {
+	struct task_struct *me = current;
 	int nr;
 	int rc;
 	struct task_struct *task;
 
 	/*
-	 * The last thread in the cgroup-init thread group is terminating.
-	 * Find remaining pid_ts in the namespace, signal and wait for them
-	 * to exit.
+	 * The last task in the pid namespace-init thread group is terminating.
+	 * Find remaining pids in the namespace, signal and wait for them
+	 * to to be reaped.
 	 *
-	 * Note:  This signals each threads in the namespace - even those that
+	 * By waiting for all of the tasks to be reaped before init is reaped
+	 * we provide the invariant that no task can escape the pid namespace.
+	 *
+	 * Note:  This signals each task in the namespace - even those that
 	 * 	  belong to the same thread group, To avoid this, we would have
 	 * 	  to walk the entire tasklist looking a processes in this
 	 * 	  namespace, but that could be unnecessarily expensive if the
@@ -164,32 +176,95 @@ void zap_pid_ns_processes(struct pid_namespace *pid_ns)
 	 *
 	 */
 	read_lock(&tasklist_lock);
-	nr = next_pidmap(pid_ns, 1);
-	while (nr > 0) {
-		rcu_read_lock();
+	pid_ns->dead = 1;
+	for (nr = next_pidmap(pid_ns, 0); nr > 0; nr = next_pidmap(pid_ns, nr)) {
 
 		/*
 		 * Any nested-container's init processes won't ignore the
 		 * SEND_SIG_NOINFO signal, see send_signal()->si_fromuser().
 		 */
-		task = pid_task(find_vpid(nr), PIDTYPE_PID);
-		if (task)
+		rcu_read_lock();
+		task = pid_task(find_pid_ns(nr, pid_ns), PIDTYPE_PID);
+		if (task && !same_thread_group(task, me))
 			send_sig_info(SIGKILL, SEND_SIG_NOINFO, task);
-
 		rcu_read_unlock();
-
-		nr = next_pidmap(pid_ns, nr);
 	}
 	read_unlock(&tasklist_lock);
 
+	/* Nicely reap all of the remaining children in the namespace */
 	do {
 		clear_thread_flag(TIF_SIGPENDING);
 		rc = sys_wait4(-1, NULL, __WALL, NULL);
 	} while (rc != -ECHILD);
+       
+
+repeat:
+	/* Brute force wait for any remaining tasks to pass unhash_process
+	 * in release_task.  Once a task has passed unhash_process there
+	 * is no pid_namespace state left and they can be safely ignored.
+	 */
+	for (nr = next_pidmap(pid_ns, 1); nr > 0; nr = next_pidmap(pid_ns, nr)) {
+		int found;
+
+		/* Are there any tasks alive in this pid namespace */
+		rcu_read_lock();
+		task = pid_task(find_pid_ns(nr, pid_ns), PIDTYPE_PID);
+		found = task && !same_thread_group(task, me);
+		rcu_read_unlock();
+		if (found) {
+			clear_thread_flag(TIF_SIGPENDING);
+			schedule_timeout_interruptible(HZ/10);
+			goto repeat;
+		}
+	}
+	/* At this point there are at most two tasks in the pid namespace.
+	 * These tasks are our current task, and if we aren't pid 1 the zombie
+	 * of pid 1. In either case pid 1 will be the final task reaped in this
+	 * pid namespace, as non-leader threads are self reaping and leaders
+	 * cannot be reaped until all of their siblings have been reaped.
+	 */
 
 	acct_exit_ns(pid_ns);
 	return;
 }
+
+static void *pidns_get(struct task_struct *task)
+{
+	struct pid_namespace *ns;
+
+	rcu_read_lock();
+	ns = get_pid_ns(task_active_pid_ns(task));
+	rcu_read_unlock();
+
+	return ns;
+}
+
+static void pidns_put(void *ns)
+{
+	put_pid_ns(ns);
+}
+
+static int pidns_install(struct nsproxy *nsproxy, void *ns)
+{
+	put_pid_ns(nsproxy->pid_ns);
+	nsproxy->pid_ns = get_pid_ns(ns);
+	return 0;
+}
+
+static unsigned int pidns_inum(void *vns)
+{
+	struct pid_namespace *ns = vns;
+	return ns->proc_inum;
+}
+
+const struct proc_ns_operations pidns_operations = {
+	.name		= "pid",
+	.type		= CLONE_NEWPID,
+	.get		= pidns_get,
+	.put		= pidns_put,
+	.install	= pidns_install,
+	.inum		= pidns_inum,
+};
 
 static __init int pid_namespaces_init(void)
 {

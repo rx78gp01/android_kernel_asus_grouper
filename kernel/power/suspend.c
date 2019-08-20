@@ -102,16 +102,12 @@ static int suspend_prepare(void)
 	if (error)
 		goto Finish;
 
-	error = usermodehelper_disable();
-	if (error)
-		goto Finish;
-
 	error = suspend_freeze_processes();
 	if (!error)
 		return 0;
 
-	suspend_thaw_processes();
-	usermodehelper_enable();
+	suspend_stats.failed_freeze++;
+	dpm_save_failed_step(SUSPEND_FREEZE);
  Finish:
 	pm_notifier_call_chain(PM_POST_SUSPEND);
 	pm_restore_console();
@@ -259,7 +255,6 @@ int suspend_devices_and_enter(suspend_state_t state)
 static void suspend_finish(void)
 {
 	suspend_thaw_processes();
-	usermodehelper_enable();
 	pm_notifier_call_chain(PM_POST_SUSPEND);
 	pm_restore_console();
 }
@@ -318,8 +313,16 @@ int enter_state(suspend_state_t state)
  */
 int pm_suspend(suspend_state_t state)
 {
-	if (state > PM_SUSPEND_ON && state < PM_SUSPEND_MAX)
-		return enter_state(state);
+	int ret;
+	if (state > PM_SUSPEND_ON && state <= PM_SUSPEND_MAX) {
+		ret = enter_state(state);
+		if (ret) {
+			suspend_stats.fail++;
+			dpm_save_failed_errno(ret);
+		} else
+			suspend_stats.success++;
+		return ret;
+	}
 	return -EINVAL;
 }
 EXPORT_SYMBOL(pm_suspend);

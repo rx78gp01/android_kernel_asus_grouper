@@ -62,6 +62,7 @@ extern const struct file_operations random_fops, urandom_fops;
 #endif
 
 unsigned int get_random_int(void);
+unsigned long get_random_long(void);
 unsigned long randomize_range(unsigned long start, unsigned long end, unsigned long len);
 
 u32 random32(void);
@@ -90,6 +91,19 @@ static inline void prandom32_seed(struct rnd_state *state, u64 seed)
 	state->s2 = __seed(i, 7);
 	state->s3 = __seed(i, 15);
 }
+
+#ifdef CONFIG_ARCH_RANDOM
+# include <asm/archrandom.h>
+#else
+static inline int arch_get_random_long(unsigned long *v)
+{
+	return 0;
+}
+static inline int arch_get_random_int(unsigned int *v)
+{
+	return 0;
+}
+#endif
 
 #endif /* __KERNEL___ */
 

@@ -8,7 +8,6 @@ obj-$(CONFIG_ARCH_TEGRA_2x_SOC)         += common-t2.o
 obj-$(CONFIG_ARCH_TEGRA_3x_SOC)         += common-t3.o
 obj-y                                   += io.o
 obj-y                                   += irq.o
-obj-$(CONFIG_TEGRA_GRHOST)              += syncpt.o
 obj-y                                   += clock.o
 obj-y                                   += clock-common.o
 obj-y                                   += timer.o
@@ -18,6 +17,7 @@ obj-y                                   += tegra2_clocks.o
 obj-y                                   += timer-t2.o
 else
 obj-y                                   += tegra3_clocks.o
+obj-$(CONFIG_DEBUG_FS)                  += clocks_stats.o
 obj-y                                   += timer-t3.o
 endif
 obj-y                                   += pinmux.o
@@ -28,8 +28,7 @@ obj-y                                   += pm.o
 obj-$(CONFIG_TEGRA_WDT_RECOVERY)        += wdt-recovery.o
 obj-$(CONFIG_PM_SLEEP)                  += pm-irq.o
 obj-y                                   += gic.o
-#obj-y                           		+= otgfi.o          # tmtmtm
-obj-$(CONFIG_USBHOST)              	    += usbhost.o        # tmtmtm
+obj-$(CONFIG_USBHOST)         		+= usbhost.o        # tmtmtm
 
 
 obj-y                                   += sleep.o
@@ -74,14 +73,23 @@ obj-$(CONFIG_ARCH_TEGRA_3x_SOC)         += pm-t3.o
 obj-$(CONFIG_ARCH_TEGRA_2x_SOC)         += pinmux-t2-tables.o
 obj-$(CONFIG_ARCH_TEGRA_3x_SOC)         += pinmux-t3-tables.o
 obj-$(CONFIG_LOCAL_TIMERS)              += localtimer.o
+obj-$(CONFIG_ASMP)              	+= autosmp.o
 obj-$(CONFIG_SMP)                       += platsmp.o
 obj-$(CONFIG_HOTPLUG_CPU)               += hotplug.o
 obj-y                                   += headsmp.o
 obj-y                                   += reset.o
+obj-$(CONFIG_LOCAL_TIMERS)              += localtimer.o
+obj-$(CONFIG_SMP)                       += platsmp.o
+obj-$(CONFIG_HOTPLUG_CPU)               += hotplug.o
+obj-y                                   += headsmp.o
 obj-$(CONFIG_TEGRA_SYSTEM_DMA)          += dma.o
 obj-$(CONFIG_CPU_FREQ)                  += cpu-tegra.o
 ifeq ($(CONFIG_TEGRA_AUTO_HOTPLUG),y)
+ifeq ($(CONFIG_CPUQUIET_FRAMEWORK),y)
+obj-$(CONFIG_ARCH_TEGRA_3x_SOC)         += cpuquiet.o
+else
 obj-$(CONFIG_ARCH_TEGRA_3x_SOC)         += cpu-tegra3.o
+endif
 endif
 obj-$(CONFIG_TEGRA_PCI)                 += pcie.o
 obj-$(CONFIG_USB_SUPPORT)               += usb_phy.o
@@ -147,13 +155,6 @@ obj-${CONFIG_MACH_ARUBA}                += board-aruba-sdhci.o
 obj-${CONFIG_MACH_ARUBA}                += board-aruba-sensors.o
 
 obj-${CONFIG_MACH_WHISTLER}             += board-whistler.o
-obj-${CONFIG_MACH_WHISTLER}             += board-whistler-pinmux.o
-obj-${CONFIG_MACH_WHISTLER}             += board-whistler-sdhci.o
-obj-${CONFIG_MACH_WHISTLER}             += board-whistler-power.o
-obj-${CONFIG_MACH_WHISTLER}             += board-whistler-panel.o
-obj-${CONFIG_MACH_WHISTLER}             += board-whistler-sensors.o
-obj-${CONFIG_MACH_WHISTLER}             += board-whistler-kbc.o
-obj-${CONFIG_MACH_WHISTLER}             += board-whistler-baseband.o
 obj-${CONFIG_MACH_WHISTLER}             += board-whistler-memory.o
 
 obj-${CONFIG_MACH_CARDHU}               += board-cardhu.o
@@ -169,7 +170,6 @@ obj-${CONFIG_MACH_CARDHU}               += board-cardhu-memory.o
 obj-${CONFIG_MACH_CARDHU}               += board-cardhu-powermon.o
 
 obj-${CONFIG_MACH_KAI}                  += board-touch-kai-synaptics-spi.o
-obj-${CONFIG_MACH_GROUPER}              += board-touch-grouper-synaptics-spi.o
 obj-y                                   += board-touch-raydium_spi.o
 
 obj-${CONFIG_MACH_P1852}               += board-p1852.o
@@ -205,7 +205,8 @@ obj-${CONFIG_MACH_GROUPER}              += board-grouper-power.o
 obj-${CONFIG_MACH_GROUPER}              += board-grouper-power-ti.o
 obj-${CONFIG_MACH_GROUPER}              += board-grouper-sdhci.o
 obj-${CONFIG_MACH_GROUPER}              += board-grouper-sensors.o
-
+obj-${CONFIG_MACH_GROUPER}              += board-touch-grouper-synaptics-spi.o
+ 
 obj-${CONFIG_TEGRA_BB_XMM_POWER}        += baseband-xmm-power.o
 obj-${CONFIG_TEGRA_BB_XMM_POWER2}       += baseband-xmm-power2.o
 

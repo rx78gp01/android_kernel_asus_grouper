@@ -67,6 +67,7 @@ static spinlock_t up_cpumask_lock;
 static cpumask_t down_cpumask;
 static spinlock_t down_cpumask_lock;
 static struct mutex set_speed_lock;
+static struct kobject *interactive_kobj;
 
 struct cpufreq_interactive_core_lock {
 	struct pm_qos_request_list qos_min_req;
@@ -1236,6 +1237,10 @@ static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 
 		rc = sysfs_create_group(cpufreq_global_kobject,
 				&interactive_attr_group);
+		interactive_kobj = kobject_create_and_add(
+					"gov_interactive",
+					cpufreq_global_kobject);
+		kobject_uevent(interactive_kobj, KOBJ_ADD);
 		if (rc)
 			return rc;
 
@@ -1269,6 +1274,8 @@ static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 		input_unregister_handler(&cpufreq_interactive_input_handler);
 		sysfs_remove_group(cpufreq_global_kobject,
 				&interactive_attr_group);
+		kobject_uevent(interactive_kobj, KOBJ_REMOVE);
+		kobject_put(interactive_kobj);
 
 		break;
 
@@ -1346,6 +1353,8 @@ static int __init cpufreq_interactive_init(void)
 	spin_lock_init(&down_cpumask_lock);
 	mutex_init(&set_speed_lock);
 
+	/* Kick the kthread to idle */
+	wake_up_process(up_task);
 	pm_qos_add_request(&core_lock.qos_min_req, PM_QOS_MIN_ONLINE_CPUS,
 			core_lock.min_core_keep);
 
@@ -1370,6 +1379,9 @@ static int __init cpufreq_interactive_init(void)
 
 	sched_setscheduler_nocheck(core_lock.lock_task, SCHED_FIFO, &param);
 	get_task_struct(core_lock.lock_task);
+
+        /* Kick the kthread to idle */
+        wake_up_process(up_task);
 
 	idle_notifier_register(&cpufreq_interactive_idle_nb);
 	INIT_WORK(&inputopen.inputopen_work, cpufreq_interactive_input_open);

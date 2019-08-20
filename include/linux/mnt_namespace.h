@@ -8,6 +8,8 @@
 
 struct mnt_namespace {
 	atomic_t		count;
+	unsigned int		proc_inum;
+	u64			seq;
 	struct vfsmount *	root;
 	struct list_head	list;
 	wait_queue_head_t poll;
@@ -15,14 +17,13 @@ struct mnt_namespace {
 };
 
 struct proc_mounts {
-	struct seq_file m; /* must be the first element */
+	struct seq_file m;
 	struct mnt_namespace *ns;
 	struct path root;
 };
 
 struct fs_struct;
 
-extern struct mnt_namespace *create_mnt_ns(struct vfsmount *mnt);
 extern struct mnt_namespace *copy_mnt_ns(unsigned long, struct mnt_namespace *,
 		struct fs_struct *);
 extern void put_mnt_ns(struct mnt_namespace *ns);

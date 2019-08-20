@@ -224,6 +224,20 @@ static int get_num_brps(void)
 	return brps;
 }
 
+/* Determine if halting mode is enabled */
+static int halting_mode_enabled(void)
+{
+	u32 dscr;
+
+	ARM_DBG_READ(c1, 0, dscr);
+
+	if (WARN_ONCE(dscr & ARM_DSCR_HDBGEN,
+		      "halting debug mode enabled. "
+		      "Unable to access hardware resources.\n"))
+		return -EPERM;
+	return 0;
+}
+
 /*
  * In order to access the breakpoint/watchpoint control registers,
  * we must be running in debug monitor mode. Unfortunately, we can
@@ -233,16 +247,14 @@ static int get_num_brps(void)
 static int enable_monitor_mode(void)
 {
 	u32 dscr;
-	int ret = 0;
+	int ret;
 
 	ARM_DBG_READ(c1, 0, dscr);
 
-	/* Ensure that halting mode is disabled. */
-	if (WARN_ONCE(dscr & ARM_DSCR_HDBGEN,
-			"halting debug mode enabled. Unable to access hardware resources.\n")) {
-		ret = -EPERM;
-		goto out;
-	}
+ 	/* Ensure that halting mode is disabled. */
+	ret = halting_mode_enabled();
+	if (ret)
+ 		goto out;
 
 	/* If monitor mode is already enabled, just return. */
 	if (dscr & ARM_DSCR_MDBGEN)
@@ -875,7 +887,7 @@ static void reset_ctrl_regs(void *info)
 		isb();
 	}
 
-	if (enable_monitor_mode())
+	if (halting_mode_enabled())
 		return;
 
 	/* We must also reset any reserved registers. */
@@ -888,6 +900,7 @@ static void reset_ctrl_regs(void *info)
 		write_wb_reg(ARM_BASE_WCR + i, 0UL);
 		write_wb_reg(ARM_BASE_WVR + i, 0UL);
 	}
+	enable_monitor_mode();
 }
 
 static int __cpuinit dbg_reset_notify(struct notifier_block *self,
@@ -911,6 +924,22 @@ static int __init arch_hw_breakpoint_init(void)
 
 	if (!debug_arch_supported()) {
 		pr_info("debug architecture 0x%x unsupported.\n", debug_arch);
+		return 0;
+	}
+
+	/*
+	 * Scorpion CPUs (at least those in APQ8060) seem to set DBGPRSR.SPD
+	 * whenever a WFI is issued, even if the core is not powered down, in
+	 * violation of the architecture.  When DBGPRSR.SPD is set, accesses to
+	 * breakpoint and watchpoint registers are treated as undefined, so
+	 * this results in boot time and runtime failures when these are
+	 * accessed and we unexpectedly take a trap.
+	 *
+	 * It's not clear if/how this can be worked around, so we blacklist
+	 * Scorpion CPUs to avoid these issues.
+	*/
+	if ((read_cpuid_id() & 0xff00fff0) == ARM_CPU_PART_SCORPION) {
+		pr_info("Scorpion CPU detected. Hardware breakpoints and watchpoints disabled\n");
 		return 0;
 	}
 
@@ -951,10 +980,10 @@ static int __init arch_hw_breakpoint_init(void)
 	}
 
 	/* Register debug fault handler. */
-	hook_fault_code(2, hw_breakpoint_pending, SIGTRAP, TRAP_HWBKPT,
-			"watchpoint debug exception");
-	hook_ifault_code(2, hw_breakpoint_pending, SIGTRAP, TRAP_HWBKPT,
-			"breakpoint debug exception");
+	hook_fault_code(FAULT_CODE_DEBUG, hw_breakpoint_pending, SIGTRAP,
+			TRAP_HWBKPT, "watchpoint debug exception");
+	hook_ifault_code(FAULT_CODE_DEBUG, hw_breakpoint_pending, SIGTRAP,
+			TRAP_HWBKPT, "breakpoint debug exception");
 
 	/* Register hotplug notifier. */
 	register_cpu_notifier(&dbg_reset_nb);

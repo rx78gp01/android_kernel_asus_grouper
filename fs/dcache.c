@@ -37,6 +37,7 @@
 #include <linux/rculist_bl.h>
 #include <linux/prefetch.h>
 #include "internal.h"
+#include "mount.h"
 
 /*
  * Usage:
@@ -161,6 +162,43 @@ static void d_free(struct dentry *dentry)
 	else
 		call_rcu(&dentry->d_u.d_rcu, __d_free);
 }
+
+void take_dentry_name_snapshot(struct name_snapshot *name, struct dentry *dentry)
+{
+	spin_lock(&dentry->d_lock);
+	if (unlikely(dname_external(dentry))) {
+		u32 len;
+		char *p;
+
+		for (;;) {
+			len = dentry->d_name.len;
+			spin_unlock(&dentry->d_lock);
+
+			p = kmalloc(len + 1, GFP_KERNEL | __GFP_NOFAIL);
+
+			spin_lock(&dentry->d_lock);
+			if (dentry->d_name.len <= len)
+				break;
+			kfree(p);
+		}
+		memcpy(p, dentry->d_name.name, dentry->d_name.len + 1);
+		spin_unlock(&dentry->d_lock);
+
+		name->name = p;
+	} else {
+		memcpy(name->inline_name, dentry->d_iname, DNAME_INLINE_LEN);
+		spin_unlock(&dentry->d_lock);
+		name->name = name->inline_name;
+	}
+}
+EXPORT_SYMBOL(take_dentry_name_snapshot);
+
+void release_dentry_name_snapshot(struct name_snapshot *name)
+{
+	if (unlikely(name->name != name->inline_name))
+		kfree(name->name);
+}
+EXPORT_SYMBOL(release_dentry_name_snapshot);
 
 /**
  * dentry_rcuwalk_barrier - invalidate in-progress rcu-walk lookups
@@ -2437,15 +2475,14 @@ static int prepend_path(const struct path *path,
 	bool slash = false;
 	int error = 0;
 
-	br_read_lock(vfsmount_lock);
+	br_read_lock(&vfsmount_lock);
 	while (dentry != root->dentry || vfsmnt != root->mnt) {
 		struct dentry * parent;
 
 		if (dentry == vfsmnt->mnt_root || IS_ROOT(dentry)) {
 			/* Global root? */
-			if (vfsmnt->mnt_parent == vfsmnt) {
+			if (!mnt_has_parent(vfsmnt))
 				goto global_root;
-			}
 			dentry = vfsmnt->mnt_mountpoint;
 			vfsmnt = vfsmnt->mnt_parent;
 			continue;
@@ -2468,7 +2505,7 @@ static int prepend_path(const struct path *path,
 		error = prepend(buffer, buflen, "/", 1);
 
 out:
-	br_read_unlock(vfsmount_lock);
+	br_read_unlock(&vfsmount_lock);
 	return error;
 
 global_root:
@@ -2842,11 +2879,11 @@ int path_is_under(struct path *path1, struct path *path2)
 	struct dentry *dentry = path1->dentry;
 	int res;
 
-	br_read_lock(vfsmount_lock);
+	br_read_lock(&vfsmount_lock);
 	if (mnt != path2->mnt) {
 		for (;;) {
-			if (mnt->mnt_parent == mnt) {
-				br_read_unlock(vfsmount_lock);
+			if (!mnt_has_parent(mnt)) {
+				br_read_unlock(&vfsmount_lock);
 				return 0;
 			}
 			if (mnt->mnt_parent == path2->mnt)
@@ -2856,7 +2893,7 @@ int path_is_under(struct path *path1, struct path *path2)
 		dentry = mnt->mnt_mountpoint;
 	}
 	res = is_subdir(dentry, path2->dentry);
-	br_read_unlock(vfsmount_lock);
+	br_read_unlock(&vfsmount_lock);
 	return res;
 }
 EXPORT_SYMBOL(path_is_under);

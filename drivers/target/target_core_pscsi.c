@@ -570,6 +570,8 @@ static struct se_device *pscsi_create_virtdevice(
 				return (struct se_device *) sh;
 			}
 		}
+
+		blk_rq_set_block_pc(req);
 	} else {
 		if (phv->phv_mode == PHV_VIRUTAL_HOST_ID) {
 			pr_err("pSCSI: PHV_VIRUTAL_HOST_ID set while"

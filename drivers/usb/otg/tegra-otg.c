@@ -68,6 +68,11 @@ struct tegra_otg_data {
 };
 static struct tegra_otg_data *tegra_clone;
 
+#ifdef CONFIG_USB_OTG_ON_CHARGING
+static bool tegra_otg_on_charging = false;
+module_param(tegra_otg_on_charging, bool, 0664);
+#endif
+
 static inline unsigned long otg_readl(struct tegra_otg_data *tegra,
 				      unsigned int offset)
 {
@@ -154,8 +159,6 @@ error:
 
 static void tegra_usb_otg_host_unregister(struct platform_device *pdev)
 {
-	kfree(pdev->dev.platform_data);
-	pdev->dev.platform_data = NULL;
 	platform_device_unregister(pdev);
 }
 
@@ -236,6 +239,15 @@ static void irq_work(struct work_struct *work)
 
 		// tmtmtm
         smb347_deep_sleep = 0;
+		if (tegra->charger_cb) {
+			if (tegra_otg_on_charging)
+				/* enable v_bus detection for charging */
+				tegra->detect_vbus = true;
+			else
+				/* enable OTG to supply internal power */
+				tegra->charger_cb(to, from, tegra->charger_cb_data);				
+		}
+
 		if (to == OTG_STATE_A_SUSPEND) {
 			if (from == OTG_STATE_A_HOST) {
 				if (tegra->charger_cb) {
@@ -479,7 +491,7 @@ static int tegra_otg_suspend(struct device *dev)
 	val = tegra_otg->intr_reg_data & ~(USB_ID_INT_EN | USB_VBUS_INT_EN);
 	writel(val, (tegra_otg->regs + USB_PHY_WAKEUP));
 	clk_disable(tegra_otg->clk);
-
+	printk(KERN_INFO "%s(): tegra_otg->intr_reg_data = %#X\n", __func__, tegra_otg->intr_reg_data);
 	if (from == OTG_STATE_B_PERIPHERAL && otg->gadget) {
 		usb_gadget_vbus_disconnect(otg->gadget);
 		otg->state = OTG_STATE_A_SUSPEND;
@@ -504,6 +516,13 @@ static void tegra_otg_resume(struct device *dev)
 	msleep(1);
 	/* restore the interupt enable for cable ID and VBUS */
 	clk_enable(tegra_otg->clk);
+	if (!(tegra_otg->intr_reg_data & USB_VBUS_INT_EN) || !(tegra_otg->intr_reg_data & USB_VBUS_WAKEUP_EN) ||
+		!(tegra_otg->intr_reg_data & USB_ID_INT_EN) || !(tegra_otg->intr_reg_data & USB_ID_PIN_WAKEUP_EN)) {
+		printk(KERN_INFO "%s(): WRONG! tegra_otg->intr_reg_data = %#X\n", __func__, tegra_otg->intr_reg_data);
+		tegra_otg->intr_reg_data |= (USB_VBUS_INT_EN | USB_VBUS_WAKEUP_EN);
+		tegra_otg->intr_reg_data |= (USB_ID_INT_EN | USB_ID_PIN_WAKEUP_EN);
+	}
+	printk(KERN_INFO "%s(): tegra_otg->intr_reg_data = %#X\n", __func__, tegra_otg->intr_reg_data);
 	writel(tegra_otg->intr_reg_data, (tegra_otg->regs + USB_PHY_WAKEUP));
 	val = readl(tegra_otg->regs + USB_PHY_WAKEUP);
 	clk_disable(tegra_otg->clk);

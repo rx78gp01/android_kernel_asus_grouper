@@ -232,6 +232,11 @@ again:
 			goto again;
 		}
 		timer->base = new_base;
+        } else {
+                if (cpu != this_cpu && hrtimer_check_target(timer, new_base)) {
+                        cpu = this_cpu;
+                        goto again;
+                }
 	}
 	return new_base;
 }
@@ -567,6 +572,23 @@ hrtimer_force_reprogram(struct hrtimer_cpu_base *cpu_base, int skip_equal)
 
 	cpu_base->expires_next.tv64 = expires_next.tv64;
 
+        /*
+         * If a hang was detected in the last timer interrupt then we
+         * leave the hang delay active in the hardware. We want the
+         * system to make progress. That also prevents the following
+         * scenario:
+         * T1 expires 50ms from now
+         * T2 expires 5s from now
+         *
+         * T1 is removed, so this code is called and would reprogram
+         * the hardware to 5s from now. Any hrtimer_start after that
+         * will not reprogram the hardware due to hang_detected being
+         * set. So we'd effectivly block all timers until the T2 event
+         * fires.
+         */
+        if (cpu_base->hang_detected)
+                return;
+
 	if (cpu_base->expires_next.tv64 != KTIME_MAX)
 		tick_program_event(cpu_base->expires_next, 1);
 }
@@ -773,34 +795,6 @@ void hrtimers_resume(void)
 	timerfd_clock_was_set();
 }
 
-static inline void timer_stats_hrtimer_set_start_info(struct hrtimer *timer)
-{
-#ifdef CONFIG_TIMER_STATS
-	if (timer->start_site)
-		return;
-	timer->start_site = __builtin_return_address(0);
-	memcpy(timer->start_comm, current->comm, TASK_COMM_LEN);
-	timer->start_pid = current->pid;
-#endif
-}
-
-static inline void timer_stats_hrtimer_clear_start_info(struct hrtimer *timer)
-{
-#ifdef CONFIG_TIMER_STATS
-	timer->start_site = NULL;
-#endif
-}
-
-static inline void timer_stats_account_hrtimer(struct hrtimer *timer)
-{
-#ifdef CONFIG_TIMER_STATS
-	if (likely(!timer_stats_active))
-		return;
-	timer_stats_update_stats(timer, timer->start_pid, timer->start_site,
-				 timer->function, timer->start_comm, 0);
-#endif
-}
-
 /*
  * Counterpart to lock_hrtimer_base above:
  */
@@ -937,7 +931,6 @@ remove_hrtimer(struct hrtimer *timer, struct hrtimer_clock_base *base)
 		 * rare case and less expensive than a smp call.
 		 */
 		debug_deactivate(timer);
-		timer_stats_hrtimer_clear_start_info(timer);
 		reprogram = base->cpu_base == &__get_cpu_var(hrtimer_bases);
 		/*
 		 * We must preserve the CALLBACK state flag here,
@@ -982,8 +975,6 @@ int __hrtimer_start_range_ns(struct hrtimer *timer, ktime_t tim,
 	}
 
 	hrtimer_set_expires_range_ns(timer, tim, delta_ns);
-
-	timer_stats_hrtimer_set_start_info(timer);
 
 	leftmost = enqueue_hrtimer(timer, new_base);
 
@@ -1160,12 +1151,6 @@ static void __hrtimer_init(struct hrtimer *timer, clockid_t clock_id,
 	base = hrtimer_clockid_to_base(clock_id);
 	timer->base = &cpu_base->clock_base[base];
 	timerqueue_init(&timer->node);
-
-#ifdef CONFIG_TIMER_STATS
-	timer->start_site = NULL;
-	timer->start_pid = -1;
-	memset(timer->start_comm, 0, TASK_COMM_LEN);
-#endif
 }
 
 /**
@@ -1213,7 +1198,6 @@ static void __run_hrtimer(struct hrtimer *timer, ktime_t *now)
 
 	debug_deactivate(timer);
 	__remove_hrtimer(timer, base, HRTIMER_STATE_CALLBACK, 0);
-	timer_stats_account_hrtimer(timer);
 	fn = timer->function;
 
 	/*

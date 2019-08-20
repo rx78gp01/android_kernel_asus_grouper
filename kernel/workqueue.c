@@ -25,6 +25,7 @@
 
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/bug.h>
 #include <linux/sched.h>
 #include <linux/init.h>
 #include <linux/signal.h>
@@ -1003,14 +1004,15 @@ static void __queue_work(unsigned int cpu, struct workqueue_struct *wq,
 			cpu = raw_smp_processor_id();
 
 		/*
-		 * It's multi cpu.  If @wq is non-reentrant and @work
-		 * was previously on a different cpu, it might still
-		 * be running there, in which case the work needs to
-		 * be queued on that cpu to guarantee non-reentrance.
+		 * It's multi cpu.  If @work was previously on a different
+		 * cpu, it might still be running there, in which case the
+		 * work needs to be queued on that cpu to guarantee
+		 * non-reentrancy.
 		 */
 		gcwq = get_gcwq(cpu);
-		if (wq->flags & WQ_NON_REENTRANT &&
-		    (last_gcwq = get_work_gcwq(work)) && last_gcwq != gcwq) {
+		last_gcwq = get_work_gcwq(work);
+
+		if (last_gcwq && last_gcwq != gcwq) {
 			struct worker *worker;
 
 			spin_lock_irqsave(&last_gcwq->lock, flags);
@@ -1146,8 +1148,6 @@ int queue_delayed_work_on(int cpu, struct workqueue_struct *wq,
 
 		BUG_ON(timer_pending(timer));
 		BUG_ON(!list_empty(&work->entry));
-
-		timer_stats_timer_set_start_info(&dwork->timer);
 
 		/*
 		 * This stores cwq for the moment, for the timer_fn.
@@ -2011,6 +2011,7 @@ __acquires(&gcwq->lock)
 		printk(KERN_ERR "    last function: ");
 		print_symbol("%s\n", (unsigned long)f);
 		debug_show_held_locks(current);
+		BUG_ON(PANIC_CORRUPTION);
 		dump_stack();
 	}
 

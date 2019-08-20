@@ -577,7 +577,7 @@ ext4_xattr_set_entry(struct ext4_xattr_info *i, struct ext4_xattr_search *s)
 		s->here->e_name_len = name_len;
 		memcpy(s->here->e_name, i->name, name_len);
 	} else {
-		if (!s->here->e_value_block && s->here->e_value_size) {
+		if (!s->here->e_value_block && s->here->e_value_size && s->here->e_value_offs) {
 			void *first_val = s->base + min_offs;
 			size_t offs = le16_to_cpu(s->here->e_value_offs);
 			void *val = s->base + offs;
@@ -1212,6 +1212,8 @@ retry:
 			if (!tried_min_extra_isize && s_min_extra_isize) {
 				tried_min_extra_isize++;
 				new_extra_isize = s_min_extra_isize;
+				kfree(is); is = NULL;
+				kfree(bs); bs = NULL;
 				brelse(bh);
 				goto retry;
 			}

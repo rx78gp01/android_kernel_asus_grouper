@@ -63,6 +63,7 @@ EXPORT_SYMBOL(jiffies_64);
 #define TVR_SIZE (1 << TVR_BITS)
 #define TVN_MASK (TVN_SIZE - 1)
 #define TVR_MASK (TVR_SIZE - 1)
+#define MAX_TVAL ((unsigned long)((1ULL << (TVR_BITS + 4*TVN_BITS)) - 1))
 
 struct tvec {
 	struct list_head vec[TVN_SIZE];
@@ -77,11 +78,13 @@ struct tvec_base {
 	struct timer_list *running_timer;
 	unsigned long timer_jiffies;
 	unsigned long next_timer;
+	unsigned long active_timers;
 	struct tvec_root tv1;
 	struct tvec tv2;
 	struct tvec tv3;
 	struct tvec tv4;
 	struct tvec tv5;
+	int tv1_cnt;	/* number of newly inserted timers in tv1 */
 } ____cacheline_aligned;
 
 struct tvec_base boot_tvec_bases;
@@ -144,9 +147,11 @@ static unsigned long round_jiffies_common(unsigned long j, int cpu,
 	/* now that we have rounded, subtract the extra skew again */
 	j -= cpu * 3;
 
-	if (j <= jiffies) /* rounding ate our timeout entirely; */
-		return original;
-	return j;
+	/*
+	 * Make sure j is still in the future. Otherwise return the
+	 * unmodified value.
+	 */
+	return time_is_after_jiffies(j) ? j : original;
 }
 
 /**
@@ -330,7 +335,8 @@ void set_timer_slack(struct timer_list *timer, int slack_hz)
 }
 EXPORT_SYMBOL_GPL(set_timer_slack);
 
-static void internal_add_timer(struct tvec_base *base, struct timer_list *timer)
+static void
+__internal_add_timer(struct tvec_base *base, struct timer_list *timer)
 {
 	unsigned long expires = timer->expires;
 	unsigned long idx = expires - base->timer_jiffies;
@@ -339,6 +345,7 @@ static void internal_add_timer(struct tvec_base *base, struct timer_list *timer)
 	if (idx < TVR_SIZE) {
 		int i = expires & TVR_MASK;
 		vec = base->tv1.vec + i;
+		base->tv1_cnt++;
 	} else if (idx < 1 << (TVR_BITS + TVN_BITS)) {
 		int i = (expires >> TVR_BITS) & TVN_MASK;
 		vec = base->tv2.vec + i;
@@ -354,13 +361,15 @@ static void internal_add_timer(struct tvec_base *base, struct timer_list *timer)
 		 * or you set a timer to go off in the past
 		 */
 		vec = base->tv1.vec + (base->timer_jiffies & TVR_MASK);
+		base->tv1_cnt++;
 	} else {
 		int i;
-		/* If the timeout is larger than 0xffffffff on 64-bit
-		 * architectures then we use the maximum timeout:
+		/* If the timeout is larger than MAX_TVAL (on 64-bit
+		 * architectures or with CONFIG_BASE_SMALL=1) then we
+		 * use the maximum timeout.
 		 */
-		if (idx > 0xffffffffUL) {
-			idx = 0xffffffffUL;
+		if (idx > MAX_TVAL) {
+			idx = MAX_TVAL;
 			expires = idx + base->timer_jiffies;
 		}
 		i = (expires >> (TVR_BITS + 3 * TVN_BITS)) & TVN_MASK;
@@ -372,33 +381,18 @@ static void internal_add_timer(struct tvec_base *base, struct timer_list *timer)
 	list_add_tail(&timer->entry, vec);
 }
 
-#ifdef CONFIG_TIMER_STATS
-void __timer_stats_timer_set_start_info(struct timer_list *timer, void *addr)
+static void internal_add_timer(struct tvec_base *base, struct timer_list *timer)
 {
-	if (timer->start_site)
-		return;
-
-	timer->start_site = addr;
-	memcpy(timer->start_comm, current->comm, TASK_COMM_LEN);
-	timer->start_pid = current->pid;
+	__internal_add_timer(base, timer);
+	/*
+	 * Update base->active_timers and base->next_timer
+	 */
+	if (!tbase_get_deferrable(timer->base)) {
+		if (time_before(timer->expires, base->next_timer))
+			base->next_timer = timer->expires;
+		base->active_timers++;
+	}
 }
-
-static void timer_stats_account_timer(struct timer_list *timer)
-{
-	unsigned int flag = 0;
-
-	if (likely(!timer->start_site))
-		return;
-	if (unlikely(tbase_get_deferrable(timer->base)))
-		flag |= TIMER_STATS_FLAG_DEFERRABLE;
-
-	timer_stats_update_stats(timer, timer->start_pid, timer->start_site,
-				 timer->function, timer->start_comm, flag);
-}
-
-#else
-static void timer_stats_account_timer(struct timer_list *timer) {}
-#endif
 
 #ifdef CONFIG_DEBUG_OBJECTS_TIMERS
 
@@ -427,6 +421,12 @@ static int timer_fixup_init(void *addr, enum debug_obj_state state)
 	}
 }
 
+/* Stub timer callback for improperly used timers. */
+static void stub_timer(unsigned long data)
+{
+	WARN_ON(1);
+}
+
 /*
  * fixup_activate is called when:
  * - an active object is activated
@@ -450,7 +450,8 @@ static int timer_fixup_activate(void *addr, enum debug_obj_state state)
 			debug_object_activate(timer, &timer_debug_descr);
 			return 0;
 		} else {
-			WARN_ON_ONCE(1);
+			setup_timer(timer, stub_timer, 0);
+			return 1;
 		}
 		return 0;
 
@@ -559,11 +560,6 @@ static void __init_timer(struct timer_list *timer,
 	timer->entry.next = NULL;
 	timer->base = __raw_get_cpu_var(tvec_bases);
 	timer->slack = -1;
-#ifdef CONFIG_TIMER_STATS
-	timer->start_site = NULL;
-	timer->start_pid = -1;
-	memset(timer->start_comm, 0, TASK_COMM_LEN);
-#endif
 	lockdep_init_map(&timer->lockdep_map, name, key, 0);
 }
 
@@ -608,8 +604,7 @@ void init_timer_deferrable_key(struct timer_list *timer,
 }
 EXPORT_SYMBOL(init_timer_deferrable_key);
 
-static inline void detach_timer(struct timer_list *timer,
-				int clear_pending)
+static inline void detach_timer(struct timer_list *timer, bool clear_pending)
 {
 	struct list_head *entry = &timer->entry;
 
@@ -619,6 +614,29 @@ static inline void detach_timer(struct timer_list *timer,
 	if (clear_pending)
 		entry->next = NULL;
 	entry->prev = LIST_POISON2;
+}
+
+static inline void
+detach_expired_timer(struct timer_list *timer, struct tvec_base *base)
+{
+	detach_timer(timer, true);
+	if (!tbase_get_deferrable(timer->base))
+		timer->base->active_timers--;
+}
+
+static int detach_if_pending(struct timer_list *timer, struct tvec_base *base,
+			     bool clear_pending)
+{
+	if (!timer_pending(timer))
+		return 0;
+
+	detach_timer(timer, clear_pending);
+	if (!tbase_get_deferrable(timer->base)) {
+		timer->base->active_timers--;
+		if (timer->expires == base->next_timer)
+			base->next_timer = base->timer_jiffies;
+	}
+	return 1;
 }
 
 /*
@@ -661,21 +679,13 @@ __mod_timer(struct timer_list *timer, unsigned long expires,
 	unsigned long flags;
 	int ret = 0 , cpu;
 
-	timer_stats_timer_set_start_info(timer);
 	BUG_ON(!timer->function);
 
 	base = lock_timer_base(timer, &flags);
 
-	if (timer_pending(timer)) {
-		detach_timer(timer, 0);
-		if (timer->expires == base->next_timer &&
-		    !tbase_get_deferrable(timer->base))
-			base->next_timer = base->timer_jiffies;
-		ret = 1;
-	} else {
-		if (pending_only)
-			goto out_unlock;
-	}
+	ret = detach_if_pending(timer, base, false);
+	if (!ret && pending_only)
+		goto out_unlock;
 
 	debug_activate(timer, expires);
 
@@ -706,9 +716,6 @@ __mod_timer(struct timer_list *timer, unsigned long expires,
 	}
 
 	timer->expires = expires;
-	if (time_before(timer->expires, base->next_timer) &&
-	    !tbase_get_deferrable(timer->base))
-		base->next_timer = timer->expires;
 	internal_add_timer(base, timer);
 
 out_unlock:
@@ -765,7 +772,7 @@ unsigned long apply_slack(struct timer_list *timer, unsigned long expires)
 
 	bit = find_last_bit(&mask, BITS_PER_LONG);
 
-	mask = (1 << bit) - 1;
+	mask = (1UL << bit) - 1;
 
 	expires_limit = expires_limit & ~(mask);
 
@@ -863,14 +870,10 @@ void add_timer_on(struct timer_list *timer, int cpu)
 	struct tvec_base *base = per_cpu(tvec_bases, cpu);
 	unsigned long flags;
 
-	timer_stats_timer_set_start_info(timer);
 	BUG_ON(timer_pending(timer) || !timer->function);
 	spin_lock_irqsave(&base->lock, flags);
 	timer_set_base(timer, base);
 	debug_activate(timer, timer->expires);
-	if (time_before(timer->expires, base->next_timer) &&
-	    !tbase_get_deferrable(timer->base))
-		base->next_timer = timer->expires;
 	internal_add_timer(base, timer);
 	/*
 	 * Check whether the other CPU is idle and needs to be
@@ -902,16 +905,9 @@ int del_timer(struct timer_list *timer)
 	unsigned long flags;
 	int ret = 0;
 
-	timer_stats_timer_clear_start_info(timer);
 	if (timer_pending(timer)) {
 		base = lock_timer_base(timer, &flags);
-		if (timer_pending(timer)) {
-			detach_timer(timer, 1);
-			if (timer->expires == base->next_timer &&
-			    !tbase_get_deferrable(timer->base))
-				base->next_timer = base->timer_jiffies;
-			ret = 1;
-		}
+		ret = detach_if_pending(timer, base, true);
 		spin_unlock_irqrestore(&base->lock, flags);
 	}
 
@@ -934,19 +930,10 @@ int try_to_del_timer_sync(struct timer_list *timer)
 
 	base = lock_timer_base(timer, &flags);
 
-	if (base->running_timer == timer)
-		goto out;
-
-	timer_stats_timer_clear_start_info(timer);
-	ret = 0;
-	if (timer_pending(timer)) {
-		detach_timer(timer, 1);
-		if (timer->expires == base->next_timer &&
-		    !tbase_get_deferrable(timer->base))
-			base->next_timer = base->timer_jiffies;
-		ret = 1;
+	if (base->running_timer != timer) {
+		timer_stats_timer_clear_start_info(timer);
+		ret = detach_if_pending(timer, base, true);
 	}
-out:
 	spin_unlock_irqrestore(&base->lock, flags);
 
 	return ret;
@@ -1033,7 +1020,8 @@ static int cascade(struct tvec_base *base, struct tvec *tv, int index)
 	 */
 	list_for_each_entry_safe(timer, tmp, &tv_list, entry) {
 		BUG_ON(tbase_get_base(timer->base) != base);
-		internal_add_timer(base, timer);
+		/* No accounting, while moving them */
+		__internal_add_timer(base, timer);
 	}
 
 	return index;
@@ -1102,11 +1090,29 @@ static inline void __run_timers(struct tvec_base *base)
 		/*
 		 * Cascade timers:
 		 */
-		if (!index &&
-			(!cascade(base, &base->tv2, INDEX(0))) &&
-				(!cascade(base, &base->tv3, INDEX(1))) &&
-					!cascade(base, &base->tv4, INDEX(2)))
-			cascade(base, &base->tv5, INDEX(3));
+		if (unlikely(!index)) {
+			if (!cascade(base, &base->tv2, INDEX(0))) {
+				if ((!cascade(base, &base->tv3, INDEX(1))) &&
+						!cascade(base, &base->tv4, INDEX(2)))
+					cascade(base, &base->tv5, INDEX(3));
+			}
+
+			/*
+			 * We are just crossing the boundary of tv1 (usually 256 jiffies).
+			 * Since there was no new timers inserted to tv1 and all the old
+			 * timers have been processed, it is guaranteed that tv1 has no
+			 * pending timers, so jiffie can jump to the next boundary at
+			 * most.
+			 */
+			if (base->tv1_cnt == 0) {
+				base->timer_jiffies += min_t(unsigned long,
+						TVR_SIZE - index, jiffies - base->timer_jiffies + 1);
+					continue;
+			}
+
+			base->tv1_cnt = 0;
+		}
+
 		++base->timer_jiffies;
 		list_replace_init(base->tv1.vec + index, &work_list);
 		while (!list_empty(head)) {
@@ -1117,10 +1123,8 @@ static inline void __run_timers(struct tvec_base *base)
 			fn = timer->function;
 			data = timer->data;
 
-			timer_stats_account_timer(timer);
-
 			base->running_timer = timer;
-			detach_timer(timer, 1);
+			detach_expired_timer(timer, base);
 
 			spin_unlock_irq(&base->lock);
 			call_timer_fn(timer, fn, data);
@@ -1258,18 +1262,21 @@ static unsigned long cmp_next_hrtimer_event(unsigned long now,
 unsigned long get_next_timer_interrupt(unsigned long now)
 {
 	struct tvec_base *base = __this_cpu_read(tvec_bases);
-	unsigned long expires;
+	unsigned long expires = now + NEXT_TIMER_MAX_DELTA;
 
 	/*
 	 * Pretend that there is no timer pending if the cpu is offline.
 	 * Possible pending timers will be migrated later to an active cpu.
 	 */
 	if (cpu_is_offline(smp_processor_id()))
-		return now + NEXT_TIMER_MAX_DELTA;
+		return expires;
+
 	spin_lock(&base->lock);
-	if (time_before_eq(base->next_timer, base->timer_jiffies))
-		base->next_timer = __next_timer_interrupt(base);
-	expires = base->next_timer;
+	if (base->active_timers) {
+		if (time_before_eq(base->next_timer, base->timer_jiffies))
+			base->next_timer = __next_timer_interrupt(base);
+		expires = base->next_timer;
+	}
 	spin_unlock(&base->lock);
 
 	if (time_before_eq(expires, now))
@@ -1368,7 +1375,7 @@ SYSCALL_DEFINE0(getppid)
 	int pid;
 
 	rcu_read_lock();
-	pid = task_tgid_vnr(current->real_parent);
+	pid = task_tgid_vnr(rcu_dereference(current->real_parent));
 	rcu_read_unlock();
 
 	return pid;
@@ -1646,6 +1653,7 @@ static int __cpuinit init_timers_cpu(int cpu)
 
 	base->timer_jiffies = jiffies;
 	base->next_timer = base->timer_jiffies;
+	base->active_timers = 0;
 	return 0;
 }
 
@@ -1656,11 +1664,9 @@ static void migrate_timer_list(struct tvec_base *new_base, struct list_head *hea
 
 	while (!list_empty(head)) {
 		timer = list_first_entry(head, struct timer_list, entry);
-		detach_timer(timer, 0);
+		/* We ignore the accounting on the dying cpu */
+		detach_timer(timer, false);
 		timer_set_base(timer, new_base);
-		if (time_before(timer->expires, new_base->next_timer) &&
-		    !tbase_get_deferrable(timer->base))
-			new_base->next_timer = timer->expires;
 		internal_add_timer(new_base, timer);
 	}
 }
@@ -1732,8 +1738,6 @@ void __init init_timers(void)
 {
 	int err = timer_cpu_notify(&timers_nb, (unsigned long)CPU_UP_PREPARE,
 				(void *)(long)smp_processor_id());
-
-	init_timer_stats();
 
 	BUG_ON(err != NOTIFY_OK);
 	register_cpu_notifier(&timers_nb);

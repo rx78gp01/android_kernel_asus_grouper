@@ -32,6 +32,7 @@
 #include <linux/mempolicy.h>
 #include <linux/security.h>
 #include <linux/ptrace.h>
+#include <linux/freezer.h>
 
 int sysctl_panic_on_oom;
 int sysctl_oom_kill_allocating_task;
@@ -165,12 +166,7 @@ unsigned int oom_badness(struct task_struct *p, struct mem_cgroup *mem,
 	if (!p)
 		return 0;
 
-	if (p->signal->oom_score_adj == OOM_SCORE_ADJ_MIN) {
-		task_unlock(p);
-		return 0;
-	}
-
-	/*
+        /*
 	 * The memory controller may have a limit of 0 bytes, so avoid a divide
 	 * by zero, if necessary.
 	 */
@@ -306,8 +302,11 @@ static struct task_struct *select_bad_process(unsigned int *ppoints,
 		 * blocked waiting for another task which itself is waiting
 		 * for memory. Is there a better alternative?
 		 */
-		if (test_tsk_thread_flag(p, TIF_MEMDIE))
+		if (test_tsk_thread_flag(p, TIF_MEMDIE)) {
+			if (unlikely(frozen(p)))
+				__thaw_task(p);
 			return ERR_PTR(-1UL);
+		}
 		if (!p->mm)
 			continue;
 
@@ -424,7 +423,7 @@ static int oom_kill_task(struct task_struct *p, struct mem_cgroup *mem)
 	task_unlock(p);
 
 	/*
-	 * Kill all processes sharing p->mm in other thread groups, if any.
+	 * Kill all user processes sharing p->mm in other thread groups, if any.
 	 * They don't get access to memory reserves or a higher scheduler
 	 * priority, though, to avoid depletion of all memory or task
 	 * starvation.  This prevents mm->mmap_sem livelock when an oom killed

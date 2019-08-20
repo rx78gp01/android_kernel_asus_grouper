@@ -36,7 +36,7 @@ static inline struct vfsmount *next_slave(struct vfsmount *p)
 static bool is_path_reachable(struct vfsmount *mnt, struct dentry *dentry,
 			 const struct path *root)
 {
-	while (mnt != root->mnt && mnt->mnt_parent != mnt) {
+	while (mnt != root->mnt && mnt_has_parent(mnt)) {
 		dentry = mnt->mnt_mountpoint;
 		mnt = mnt->mnt_parent;
 	}
@@ -273,12 +273,12 @@ int propagate_mnt(struct vfsmount *dest_mnt, struct dentry *dest_dentry,
 		prev_src_mnt  = child;
 	}
 out:
-	br_write_lock(vfsmount_lock);
+	br_write_lock(&vfsmount_lock);
 	while (!list_empty(&tmp_list)) {
 		child = list_first_entry(&tmp_list, struct vfsmount, mnt_hash);
 		umount_tree(child, 0, &umount_list);
 	}
-	br_write_unlock(vfsmount_lock);
+	br_write_unlock(&vfsmount_lock);
 	release_mounts(&umount_list);
 	return ret;
 }
@@ -304,7 +304,8 @@ static inline int do_refcount_check(struct vfsmount *mnt, int count)
  */
 int propagate_mount_busy(struct vfsmount *mnt, int refcnt)
 {
-	struct vfsmount *m, *child;
+        struct vfsmount *m;
+        struct mount *child;
 	struct vfsmount *parent = mnt->mnt_parent;
 	int ret = 0;
 
@@ -322,8 +323,8 @@ int propagate_mount_busy(struct vfsmount *mnt, int refcnt)
 	for (m = propagation_next(parent, parent); m;
 	     		m = propagation_next(m, parent)) {
 		child = __lookup_mnt(m, mnt->mnt_mountpoint, 0);
-		if (child && list_empty(&child->mnt_mounts) &&
-		    (ret = do_refcount_check(child, 1)))
+                if (child && list_empty(&child->mnt.mnt_mounts) &&
+                    (ret = do_refcount_check(&child->mnt, 1)))
 			break;
 	}
 	return ret;
@@ -333,24 +334,24 @@ int propagate_mount_busy(struct vfsmount *mnt, int refcnt)
  * NOTE: unmounting 'mnt' naturally propagates to all other mounts its
  * parent propagates to.
  */
-static void __propagate_umount(struct vfsmount *mnt)
+static void __propagate_umount(struct mount *mnt)
 {
-	struct vfsmount *parent = mnt->mnt_parent;
+	struct vfsmount *parent = mnt->mnt.mnt_parent;
 	struct vfsmount *m;
 
-	BUG_ON(parent == mnt);
+	BUG_ON(parent == &mnt->mnt);
 
 	for (m = propagation_next(parent, parent); m;
 			m = propagation_next(m, parent)) {
 
-		struct vfsmount *child = __lookup_mnt(m,
-					mnt->mnt_mountpoint, 0);
+		struct mount *child = __lookup_mnt(m,
+					mnt->mnt.mnt_mountpoint, 0);
 		/*
 		 * umount the child only if the child has no
 		 * other children
 		 */
-		if (child && list_empty(&child->mnt_mounts))
-			list_move_tail(&child->mnt_hash, &mnt->mnt_hash);
+                if (child && list_empty(&child->mnt.mnt_mounts))
+                        list_move_tail(&child->mnt.mnt_hash, &mnt->mnt.mnt_hash);
 	}
 }
 
@@ -363,9 +364,9 @@ static void __propagate_umount(struct vfsmount *mnt)
  */
 int propagate_umount(struct list_head *list)
 {
-	struct vfsmount *mnt;
+	struct mount *mnt;
 
-	list_for_each_entry(mnt, list, mnt_hash)
+	list_for_each_entry(mnt, list, mnt.mnt_hash)
 		__propagate_umount(mnt);
 	return 0;
 }
