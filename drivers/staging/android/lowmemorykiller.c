@@ -54,7 +54,7 @@
 #include <linux/mm_inline.h>
 #endif /* CONFIG_ZRAM_FOR_ANDROID */
 
-static uint32_t lowmem_debug_level = 1;
+static uint32_t lowmem_debug_level = 2;
 static int lowmem_adj[6] = {
 	0,
 	1,
@@ -231,7 +231,7 @@ static int lowmem_shrink(struct shrinker *s, struct shrink_control *sc)
 	    time_before_eq(jiffies, lowmem_deathpending_timeout))
 		return 0;
 
-	other_free = global_page_state(NR_FREE_PAGES) - totalreserve_pages;
+	other_free = global_page_state(NR_FREE_PAGES);
 
 	tune_lmk_param(&other_free, &other_file, sc);
 
