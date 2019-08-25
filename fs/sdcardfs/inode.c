@@ -50,7 +50,7 @@ void revert_fsids(const struct cred * old_cred)
 }
 
 static int sdcardfs_create(struct inode *dir, struct dentry *dentry,
-			 int mode, struct nameidata *nd)
+			 umode_t mode, struct nameidata *nd)
 {
 	int err = 0;
 	struct dentry *lower_dentry;
@@ -268,7 +268,7 @@ static int touch(char *abs_path, mode_t mode) {
 	return 0;
 }
 
-static int sdcardfs_mkdir(struct inode *dir, struct dentry *dentry, int mode)
+static int sdcardfs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 {
 	int err = 0;
 	int make_nomedia_in_obb = 0;
