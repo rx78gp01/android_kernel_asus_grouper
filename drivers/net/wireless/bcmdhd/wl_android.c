@@ -622,7 +622,7 @@ wl_handle_private_cmd(struct net_device *net, char *command, u32 buf_size)
 #ifdef PNO_SUPPORT
 #ifndef WL_SCHED_SCAN
 	else if (strnicmp(command, CMD_PNOSSIDCLR_SET, strlen(CMD_PNOSSIDCLR_SET)) == 0) {
-		bytes_written = dhd_dev_pno_reset(net);
+		bytes_written = dhd_dev_pno_enable(net, 0);
 	}
 #ifndef WL_SCHED_SCAN
 	else if (strnicmp(command, CMD_PNOSETUP_SET, strlen(CMD_PNOSETUP_SET)) == 0) {
@@ -630,8 +630,8 @@ wl_handle_private_cmd(struct net_device *net, char *command, u32 buf_size)
 	}
 #endif /* !WL_SCHED_SCAN */
 	else if (strnicmp(command, CMD_PNOENABLE_SET, strlen(CMD_PNOENABLE_SET)) == 0) {
-		uint pfn_enabled = *(command + strlen(CMD_PNOENABLE_SET) + 1) - '0';
-		bytes_written = dhd_dev_pno_enable(net, pfn_enabled);
+		int enable = *(command + strlen(CMD_PNOENABLE_SET) + 1) - '0';
+		bytes_written = (enable)? 0 : dhd_dev_pno_enable(net, 0);
 	}
 #endif
 #endif /* PNO_SUPPORT */
