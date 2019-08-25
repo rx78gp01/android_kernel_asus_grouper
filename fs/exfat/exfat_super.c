@@ -646,7 +646,7 @@ const struct file_operations exfat_dir_operations = {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3,7,00)
 static int exfat_create(struct inode *dir, struct dentry *dentry, umode_t mode,
 						bool excl)
-#elif LINUX_VERSION_CODE >= KERNEL_VERSION(3,3,0)
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(3,1,0)
 static int exfat_create(struct inode *dir, struct dentry *dentry, umode_t mode,
 						struct nameidata *nd)
 #else
@@ -927,7 +927,7 @@ out:
 	return err;
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,3,0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,1,0)
 static int exfat_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 #else
 static int exfat_mkdir(struct inode *dir, struct dentry *dentry, int mode)
