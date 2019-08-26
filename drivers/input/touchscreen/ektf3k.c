@@ -1957,7 +1957,10 @@ static int elan_ktf3k_ts_suspend(struct i2c_client *client, pm_message_t mesg)
 
 	touch_debug(DEBUG_INFO, "[elan] %s: enter\n", __func__);
 	if (dt2w_switch) {
+#ifndef CONFIG_TOUCHSCREEN_PREVENT_SLEEP
 		enable_irq_wake(client->irq);
+#endif
+		
 	} else {
 		disable_irq(client->irq);
 	}
@@ -1991,8 +1994,10 @@ static int elan_ktf3k_ts_resume(struct i2c_client *client)
     		} while (--retry);
 	}
 	if (dt2w_switch) {
+#ifndef CONFIG_TOUCHSCREEN_PREVENT_SLEEP
 		disable_irq_wake(client->irq);
 		//force_release_pos(client);
+#endif
 	} else {
 		enable_irq(client->irq);
 	}
