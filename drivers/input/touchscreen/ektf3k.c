@@ -1955,7 +1955,7 @@ static int elan_ktf3k_ts_suspend(struct i2c_client *client, pm_message_t mesg)
 	struct elan_ktf3k_ts_data *ts = i2c_get_clientdata(client);
 	int rc = 0;
 
-	touch_debug(DEBUG_INFO, "[elan] %s: enter\n", __func__);
+		touch_debug(DEBUG_INFO, "[elan] %s: enter suspend. irq = %d\n", __func__, client->irq);
 	if (dt2w_switch) {
 #ifndef CONFIG_TOUCHSCREEN_PREVENT_SLEEP
 		enable_irq_wake(client->irq);
@@ -1978,10 +1978,10 @@ static int elan_ktf3k_ts_suspend(struct i2c_client *client, pm_message_t mesg)
 
 static int elan_ktf3k_ts_resume(struct i2c_client *client)
 {
-
+	struct elan_ktf3k_ts_data *ts = i2c_get_clientdata(client);
 	int rc = 0, retry = 5;
 
-	touch_debug(DEBUG_INFO, "[elan] %s: enter\n", __func__);
+	touch_debug(DEBUG_INFO, "[elan] %s: enter resume. irq = %d\n", __func__, client->irq);
 	if (work_lock == 0) {
 		do {
 			rc = elan_ktf3k_ts_set_power_state(client, PWR_STATE_NORMAL);

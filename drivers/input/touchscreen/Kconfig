@@ -751,6 +751,10 @@ config TOUCHSCREEN_ELAN_TF_3K
         help
           To compile this driver as a module, choose M here: the
           module will be called atmel_tsadcc.
+          
+config TOUCHSCREEN_PREVENT_SLEEP
+		tristate "ELAN legacy Touchscreen prevent sleep"
+        depends on TOUCHSCREEN_ELAN_TF_3K
 
 config TOUCHSCREEN_RM31080A
 	tristate "RAYDIUM_31080A based touchscreens"
