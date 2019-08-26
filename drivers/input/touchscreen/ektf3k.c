@@ -1971,7 +1971,7 @@ static int elan_ktf3k_ts_suspend(struct i2c_client *client, pm_message_t mesg)
 		enable_irq(client->irq);
 
 	if((work_lock == 0) && !dt2w_switch)
-		rc = elan_ktf3k_ts_set_power_state(client, PWR_STATE_DEEP_SLEEP);
+		elan_ktf3k_ts_set_power_state(client, PWR_STATE_DEEP_SLEEP);
 
 	return 0;
 }
