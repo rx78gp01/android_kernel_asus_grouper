@@ -396,7 +396,6 @@ static ssize_t wakeup_count_store(struct kobject *kobj,
 }
 
 power_attr(wakeup_count);
-#endif /* CONFIG_PM_SLEEP */
 
 #ifdef CONFIG_PM_AUTOSLEEP
 static ssize_t autosleep_show(struct kobject *kobj,
@@ -437,7 +436,7 @@ static ssize_t autosleep_store(struct kobject *kobj,
 
 power_attr(autosleep);
 #endif /* CONFIG_PM_AUTOSLEEP */
-
+#endif /* CONFIG_PM_SLEEP */
 
 #ifdef CONFIG_PM_TRACE
 int pm_trace_enabled;
