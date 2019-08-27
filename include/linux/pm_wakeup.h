@@ -51,12 +51,15 @@ struct wakeup_source {
 	ktime_t total_time;
 	ktime_t max_time;
 	ktime_t last_time;
+	ktime_t start_prevent_time;
+	ktime_t prevent_sleep_time;
 	unsigned long		event_count;
 	unsigned long		active_count;
 	unsigned long		relax_count;
 	unsigned long		expire_count;
 	unsigned long		wakeup_count;
 	bool			active:1;
+	bool			autosleep_enabled:1;
 };
 
 #ifdef CONFIG_PM_SLEEP
