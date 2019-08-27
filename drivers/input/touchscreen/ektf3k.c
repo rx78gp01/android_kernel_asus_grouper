@@ -18,7 +18,10 @@
 #include <linux/module.h>
 #include <linux/input/mt.h>
 #include <linux/interrupt.h>
-#include <linux/earlysuspend.h>
+#ifdef CONFIG_FB
+#include <linux/notifier.h>
+#include <linux/fb.h>
+#endif
 #include <linux/platform_device.h>
 #include <linux/i2c.h>
 #include <linux/delay.h>
@@ -138,10 +141,11 @@ struct elan_ktf3k_ts_data {
 	struct input_dev *input_dev;
 	struct workqueue_struct *elan_wq;
 	struct work_struct work;
-	struct workqueue_struct *touch_release_work_wq;
-        struct work_struct touch_release_work;
 	int (*power)(int on);
-	struct early_suspend early_suspend;
+#ifdef CONFIG_FB
+	struct notifier_block fb_notif;
+	bool fb_suspended;
+#endif
 	int intr_gpio;
 // Firmware Information
 	int fw_ver;
@@ -204,13 +208,14 @@ static int dt2w_switch = 0;
 static int dt2w_switch_stored = 0;
 static bool dt2w_changed = false;
 static bool scr_suspended = false;
+static bool irqwake = false;
 static unsigned long dt2w_time[2] = {0, 0};
 static unsigned int dt2w_x[2] = {0, 0};
 static unsigned int dt2w_y[2] = {0, 0};
 static unsigned int last_x = 0;
 static unsigned int last_y = 0;
-static unsigned int dt_delta_limit = 50;
-static unsigned int dt_timeout = 100;
+static unsigned int dt_delta_limit = 30;
+static unsigned int dt_timeout = 50;
 #define DT2W_TIMEOUT_MAX 200
 #define DT2W_TIMEOUT_MIN 10
 #define DT2W_DELTA_MAX 100
@@ -239,10 +244,10 @@ static void dt2wake_presspwr(struct work_struct *dt2wake_presspwr_work)
 	// emulate power button press
 	input_event(dt2wake_pwrdev, EV_KEY, KEY_POWER, 1);
 	input_event(dt2wake_pwrdev, EV_SYN, 0, 0);
-	msleep(50);
+	msleep(60);
 	input_event(dt2wake_pwrdev, EV_KEY, KEY_POWER, 0);
 	input_event(dt2wake_pwrdev, EV_SYN, 0, 0);
-	msleep(25);
+	msleep(60);
 	mutex_unlock(&dt2w_lock);
 }
 
@@ -280,6 +285,7 @@ void doubletap_wake_func(int x, int y)
 			if ((abs(dt2w_x[0]-dt2w_x[1]) < dt_delta_limit) &&
 			    (abs(dt2w_y[0]-dt2w_y[1]) < dt_delta_limit)) {
         	                //printk("dt2w OFF->ON\n");
+        	                //touch_debug(DEBUG_INFO, "[elan] %s: dt2w OFF->ON\n",__func__);
 				reset_dt2wake();
 				dt2wake_pwrtrigger();
 			}
@@ -432,9 +438,11 @@ static int isOldFW(struct i2c_client *client)
     return 0;
 }
 
-#ifdef CONFIG_HAS_EARLYSUSPEND
-static void elan_ktf3k_ts_early_suspend(struct early_suspend *h);
-static void elan_ktf3k_ts_late_resume(struct early_suspend *h);
+#ifdef CONFIG_FB
+static void elan_ktf3k_ts_fb_suspend(struct elan_ktf3k_ts_data *ts);
+static void elan_ktf3k_ts_fb_resume(struct elan_ktf3k_ts_data *ts);
+static int fb_notifier_callback(struct notifier_block *self,
+                                unsigned long event, void *data);
 #endif
 
 static ssize_t elan_ktf3k_gpio_show(struct device *dev,
@@ -1214,7 +1222,7 @@ static void elan_ktf3k_ts_report_data2(struct i2c_client *client, uint8_t *buf)
 			input_report_abs(idev, ABS_MT_POSITION_Y, x);
 			if(unlikely(gPrint_point)) touch_debug(DEBUG_INFO, "[elan] finger id=%d X=%d y=%d size=%d pressure=%d\n",
 								i, x, y, touch_size, pressure_size);
-			if (dt2w_switch && scr_suspended) {
+			if ((dt2w_switch == 1) && scr_suspended) {
 			    doubletap_wake_func(x, y);
 			    tapped = true;
 			}
@@ -1271,14 +1279,6 @@ static void process_resp_message(struct elan_ktf3k_ts_data *ts, const unsigned c
       }
 }
 
-static void touch_release_work_func(struct work_struct *work)
-{
-	struct elan_ktf3k_ts_data *ts = container_of(work, struct elan_ktf3k_ts_data, touch_release_work);
-	if (ts)
-		force_release_pos(ts->client);
-	else
-		touch_debug(DEBUG_INFO, "[elan] %s: ts == null, aborting touch release.\n", __func__);
-}
 
 static void elan_ktf3k_ts_work_func(struct work_struct *work)
 {
@@ -1365,13 +1365,8 @@ static void elan_ktf3k_ts_work_func(struct work_struct *work)
 		    break;
 		default:
 		    up(&pSem);
-			if (((buf[0] == 0xFF) || (buf[0] == 0x7F) || (buf[0] == 0x55)) && ((buf[1] == 0x55) || (buf[1] == 0xFF)) && ((buf[2] == 0x55) || (buf[2] == 0xFF)) && ((buf[3] == 0x55) || (buf[3] == 0xFF))) {
-				touch_debug(DEBUG_INFO, "[elan] GND issue detected, forcing touch release. {0x%02X, 0x%02X, 0x%02X, 0x%02X}\n", buf[0], buf[1], buf[2], buf[3]);
-				queue_work(ts->touch_release_work_wq, &ts->touch_release_work);
-			} else {
-				touch_debug(DEBUG_INFO, "[elan] Get unknow packet {0x%02X, 0x%02X, 0x%02X, 0x%02X}\n", buf[0], buf[1], buf[2], buf[3]);
-			}
-	       }		 
+		    touch_debug(DEBUG_INFO, "[elan] Get unknow packet {0x%02X, 0x%02X, 0x%02X, 0x%02X}\n", buf[0], buf[1], buf[2], buf[3]);
+	       }
 #endif
 		enable_irq(ts->client->irq);
 }
@@ -1383,6 +1378,7 @@ static irqreturn_t elan_ktf3k_ts_irq_handler(int irq, void *dev_id)
 
 	dev_dbg(&client->dev, "[elan] %s\n", __func__);
 	disable_irq_nosync(ts->client->irq);
+	//touch_debug(DEBUG_INFO, "[elan] %s: disable_irq_nosync. irq = %d\n",__func__, ts->client->irq);
 	queue_work(ts->elan_wq, &ts->work);
 
 	return IRQ_HANDLED;
@@ -1393,11 +1389,13 @@ static int elan_ktf3k_ts_register_interrupt(struct i2c_client *client)
 	struct elan_ktf3k_ts_data *ts = i2c_get_clientdata(client);
 	int err = 0;
 
-        err = request_threaded_irq(client->irq, NULL, elan_ktf3k_ts_irq_handler,
+
 #ifdef CONFIG_TOUCHSCREEN_PREVENT_SLEEP
+        err = request_threaded_irq(client->irq, NULL, elan_ktf3k_ts_irq_handler,
                        IRQF_TRIGGER_LOW | IRQF_ONESHOT | IRQF_NO_SUSPEND, client->name, ts);
 #else
-                       IRQF_TRIGGER_LOW | IRQF_ONESHOT, client->name, ts);
+        err = request_irq(client->irq, elan_ktf3k_ts_irq_handler,
+					IRQF_TRIGGER_LOW, client->name, ts);
 #endif
 	if (err)
 		dev_err(&client->dev, "[elan] %s: request_irq %d failed\n",
@@ -1736,7 +1734,7 @@ static int elan_ktf3k_ts_probe(struct i2c_client *client,
 		goto err_alloc_data_failed;
 	}
 
-	ts->elan_wq = alloc_workqueue("elan_wq", WQ_UNBOUND | WQ_RESCUER | WQ_HIGHPRI, 1);
+	ts->elan_wq = create_singlethread_workqueue("elan_wq");
 	if (!ts->elan_wq) {
 		touch_debug(DEBUG_ERROR, "[elan] %s: create workqueue failed\n", __func__);
 		err = -ENOMEM;
@@ -1744,15 +1742,6 @@ static int elan_ktf3k_ts_probe(struct i2c_client *client,
 	}
 
 	INIT_WORK(&ts->work, elan_ktf3k_ts_work_func);
-
-	ts->touch_release_work_wq = alloc_workqueue("pos_rel", WQ_UNBOUND | WQ_RESCUER | WQ_HIGHPRI, 1);
-	if (!ts->touch_release_work_wq) {
-		touch_debug(DEBUG_ERROR, "[elan] %s: create workqueue failed\n", __func__);
-		err = -ENOMEM;
-		goto err_create_wq_failed;
-	}
-
-	INIT_WORK(&ts->touch_release_work, touch_release_work_func);
 
 	ts->client = client;
 	i2c_set_clientdata(client, ts);
@@ -1822,11 +1811,10 @@ static int elan_ktf3k_ts_probe(struct i2c_client *client,
           firmware_update_header(client, touch_firmware, sizeof(touch_firmware)/FIRMWARE_PAGE_SIZE);
 #endif
 
-#ifdef CONFIG_HAS_EARLYSUSPEND
-	ts->early_suspend.level = EARLY_SUSPEND_LEVEL_BLANK_SCREEN + 21;
-	ts->early_suspend.suspend = elan_ktf3k_ts_early_suspend;
-	ts->early_suspend.resume = elan_ktf3k_ts_late_resume;
-	register_early_suspend(&ts->early_suspend);
+#ifdef CONFIG_FB
+	ts->fb_suspended = false;
+	ts->fb_notif.notifier_call = fb_notifier_callback;
+	fb_register_client(&ts->fb_notif);
 #endif
 
 	private_ts = ts;
@@ -1917,11 +1905,9 @@ static int elan_ktf3k_ts_remove(struct i2c_client *client)
 
 	elan_touch_sysfs_deinit();
 
-	unregister_early_suspend(&ts->early_suspend);
+	fb_unregister_client(&ts->fb_notif);
 	free_irq(client->irq, ts);
 
-	if (ts->touch_release_work_wq)
-		destroy_workqueue(ts->touch_release_work_wq);
 	if (ts->elan_wq)
 		destroy_workqueue(ts->elan_wq);
 	input_unregister_device(ts->input_dev);
@@ -1957,22 +1943,34 @@ static int elan_ktf3k_ts_suspend(struct i2c_client *client, pm_message_t mesg)
 
 		touch_debug(DEBUG_INFO, "[elan] %s: enter suspend. i2c_irq = %d ts_irq = %d\n",
 			__func__, client->irq, ts->client->irq);
-	if (dt2w_switch) {
+	if (dt2w_switch == 1) {
 #ifndef CONFIG_TOUCHSCREEN_PREVENT_SLEEP
-		enable_irq_wake(client->irq);
+		if (!enable_irq_wake(client->irq)) {
+			//touch_debug(DEBUG_INFO, "[elan] %s: enable_irq_wake. irq = %d\n",__func__, client->irq);
+			irqwake = true;
+		} else {
+			touch_debug(DEBUG_INFO, "[elan] %s: enable_irq_wake failed. irq = %d\n",__func__, client->irq);
+			irqwake = false;
+		}
 #endif
-		
+		//disable_irq(client->irq);
+		force_release_pos(client);
+		scr_suspended = true;
 	} else {
 		disable_irq(client->irq);
-	}
-	force_release_pos(client);
-	scr_suspended = true;
-	rc = cancel_work_sync(&ts->work);
-	if (rc && !dt2w_switch)
+		//touch_debug(DEBUG_INFO, "[elan] %s: disable_irq. irq = %d\n",__func__, client->irq);
+		force_release_pos(client);
+		scr_suspended = true;
+		rc = cancel_work_sync(&ts->work);
+	if (rc) {
 		enable_irq(client->irq);
-
-	if((work_lock == 0) && !dt2w_switch)
+		//touch_debug(DEBUG_INFO, "[elan] %s: enable_irq. irq = %d\n",__func__, client->irq);
+	}
+	if(work_lock == 0)
 		elan_ktf3k_ts_set_power_state(client, PWR_STATE_DEEP_SLEEP);
+	}
+
+
 
 	return 0;
 }
@@ -1984,24 +1982,29 @@ static int elan_ktf3k_ts_resume(struct i2c_client *client)
 
 	touch_debug(DEBUG_INFO, "[elan] %s: enter resume. i2c_irq = %d ts_irq = %d\n",
 		__func__, client->irq, ts->client->irq);
-	if (work_lock == 0) {
-		do {
-			rc = elan_ktf3k_ts_set_power_state(client, PWR_STATE_NORMAL);
-			rc = elan_ktf3k_ts_get_power_state(client);
-			if (rc != PWR_NORMAL_STATE && rc != PWR_IDLE_STATE)
-				touch_debug(DEBUG_ERROR,  "[elan] %s: wake up tp failed! err = %d\n",
-					__func__, rc);
-			else
-				break;
-    		} while (--retry);
-	}
-	if (dt2w_switch) {
+	if (dt2w_switch == 1) {
 #ifndef CONFIG_TOUCHSCREEN_PREVENT_SLEEP
+		if (irqwake) {
 		disable_irq_wake(client->irq);
+		//touch_debug(DEBUG_INFO, "[elan] %s: disable_irq_wake. irq = %d\n",__func__, client->irq);
+		}
 		//force_release_pos(client);
+		//enable_irq(client->irq);
 #endif
 	} else {
+				if (work_lock == 0) {
+			do {
+					rc = elan_ktf3k_ts_set_power_state(client, PWR_STATE_NORMAL);
+					rc = elan_ktf3k_ts_get_power_state(client);
+				if (rc != PWR_NORMAL_STATE && rc != PWR_IDLE_STATE)
+					touch_debug(DEBUG_ERROR,  "[elan] %s: wake up tp failed! err = %d\n",
+						__func__, rc);
+				else
+					break;
+				} while (--retry);
+		}
 		enable_irq(client->irq);
+		//touch_debug(DEBUG_INFO, "[elan] %s: enable_irq. irq = %d\n",__func__, client->irq);
 	}
 
 	if (dt2w_changed) {
@@ -2013,19 +2016,51 @@ static int elan_ktf3k_ts_resume(struct i2c_client *client)
 	return 0;
 }
 
-#ifdef CONFIG_HAS_EARLYSUSPEND
-static void elan_ktf3k_ts_early_suspend(struct early_suspend *h)
+#ifdef CONFIG_FB
+static void elan_ktf3k_ts_fb_suspend(struct elan_ktf3k_ts_data *ts)
 {
-	struct elan_ktf3k_ts_data *ts;
-	ts = container_of(h, struct elan_ktf3k_ts_data, early_suspend);
+	if (ts->fb_suspended)
+		return;
+
 	elan_ktf3k_ts_suspend(ts->client, PMSG_SUSPEND);
+	ts->fb_suspended = true;
 }
 
-static void elan_ktf3k_ts_late_resume(struct early_suspend *h)
+static void elan_ktf3k_ts_fb_resume(struct elan_ktf3k_ts_data *ts)
 {
-	struct elan_ktf3k_ts_data *ts;
-	ts = container_of(h, struct elan_ktf3k_ts_data, early_suspend);
+        if (!ts->fb_suspended)
+                return;
+
 	elan_ktf3k_ts_resume(ts->client);
+        ts->fb_suspended = false;
+}
+
+static int fb_notifier_callback(struct notifier_block *self,
+				unsigned long event, void *data)
+{
+	struct fb_event *evdata = data;
+	int *blank;
+	struct elan_ktf3k_ts_data *ts = container_of(self, struct elan_ktf3k_ts_data, fb_notif);
+
+	if (evdata && evdata->data && ts) {
+		if (event == FB_EVENT_BLANK) {
+			blank = evdata->data;
+			switch (*blank) {
+				case FB_BLANK_UNBLANK:
+				case FB_BLANK_NORMAL:
+				case FB_BLANK_VSYNC_SUSPEND:
+				case FB_BLANK_HSYNC_SUSPEND:
+					elan_ktf3k_ts_fb_resume(ts);
+					break;
+				default:
+				case FB_BLANK_POWERDOWN:
+					elan_ktf3k_ts_fb_suspend(ts);
+					break;
+			}
+		}
+	}
+
+	return 0;
 }
 #endif
 
@@ -2037,7 +2072,7 @@ static const struct i2c_device_id elan_ktf3k_ts_id[] = {
 static struct i2c_driver ektf3k_ts_driver = {
 	.probe		= elan_ktf3k_ts_probe,
 	.remove		= elan_ktf3k_ts_remove,
-#ifndef CONFIG_HAS_EARLYSUSPEND
+#ifndef CONFIG_FB
 	.suspend	= elan_ktf3k_ts_suspend,
 	.resume		= elan_ktf3k_ts_resume,
 #endif
