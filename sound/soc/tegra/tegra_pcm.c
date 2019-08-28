@@ -41,9 +41,9 @@
 #include "tegra_pcm.h"
 
 #ifdef CONFIG_AUDIO_MIN_PERFLOCK
-#include <linux/pm_qos_params.h>
+#include <linux/pm_qos.h>
 #define PLAYBACK_CPU_FREQ_MAX 370000
-static struct pm_qos_request_list playback_cpu_freq_req;
+static struct pm_qos_request playback_cpu_freq_req;
 #endif
 
 #define DRV_NAME "tegra-pcm-audio"
