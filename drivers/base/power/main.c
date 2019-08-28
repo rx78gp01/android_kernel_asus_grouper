@@ -33,6 +33,8 @@
 #include "../base.h"
 #include "power.h"
 
+typedef int (*pm_callback_t)(struct device *);
+
 /*
  * The entries in the dpm_list list are in a depth first order, simply
  * because children are guaranteed to be discovered after parents, and
@@ -46,6 +48,7 @@
 LIST_HEAD(dpm_list);
 LIST_HEAD(dpm_prepared_list);
 LIST_HEAD(dpm_suspended_list);
+LIST_HEAD(dpm_late_early_list);
 LIST_HEAD(dpm_noirq_list);
 
 struct suspend_stats suspend_stats;
@@ -285,6 +288,40 @@ static int pm_op(struct device *dev,
 	initcall_debug_report(dev, calltime, error);
 
 	return error;
+}
+
+/**
+ * pm_late_early_op - Return the PM operation appropriate for given PM event.
+ * @ops: PM operations to choose from.
+ * @state: PM transition of the system being carried out.
+ *
+ * Runtime PM is disabled for @dev while this function is being executed.
+ */
+static pm_callback_t pm_late_early_op(const struct dev_pm_ops *ops,
+				      pm_message_t state)
+{
+	switch (state.event) {
+#ifdef CONFIG_SUSPEND
+	case PM_EVENT_SUSPEND:
+		return ops->suspend_late;
+	case PM_EVENT_RESUME:
+		return ops->resume_early;
+#endif /* CONFIG_SUSPEND */
+#ifdef CONFIG_HIBERNATE_CALLBACKS
+	case PM_EVENT_FREEZE:
+	case PM_EVENT_QUIESCE:
+		return ops->freeze_late;
+	case PM_EVENT_HIBERNATE:
+		return ops->poweroff_late;
+	case PM_EVENT_THAW:
+	case PM_EVENT_RECOVER:
+		return ops->thaw_early;
+	case PM_EVENT_RESTORE:
+		return ops->restore_early;
+#endif /* CONFIG_HIBERNATE_CALLBACKS */
+	}
+
+	return NULL;
 }
 
 /**
@@ -1069,13 +1106,10 @@ static int __device_suspend(struct device *dev, pm_message_t state, bool async)
 		pm_wakeup_event(dev, 0);
 
 	if (pm_wakeup_pending()) {
-<<<<<<< HEAD
 		pm_runtime_put_sync(dev);
-=======
 		pm_get_active_wakeup_sources(suspend_abort,
 			MAX_SUSPEND_ABORT_LEN);
 		log_suspend_abort_reason(suspend_abort);
->>>>>>> e532467... power: log the last suspend abort reason.
 		async_error = -EBUSY;
 		return 0;
 	}
