@@ -43,6 +43,7 @@
 #include <linux/kernel.h>
 
 #include <linux/uaccess.h>
+#include <linux/export.h>
 
 /*
  * locking rule: all changes to constraints or notifiers lists
@@ -69,6 +70,7 @@ static struct pm_qos_constraints cpu_dma_constraints = {
 };
 static struct pm_qos_object cpu_dma_pm_qos = {
 	.constraints = &cpu_dma_constraints,
+	.name = "cpu_dma_latency",
 };
 
 static BLOCKING_NOTIFIER_HEAD(network_lat_notifier);
@@ -99,59 +101,11 @@ static struct pm_qos_object network_throughput_pm_qos = {
 };
 
 
-static BLOCKING_NOTIFIER_HEAD(min_online_cpus_notifier);
-static struct pm_qos_object min_online_cpus_pm_qos = {
-	.requests = PLIST_HEAD_INIT(min_online_cpus_pm_qos.requests),
-	.notifiers = &min_online_cpus_notifier,
-	.name = "min_online_cpus",
-	.target_value = PM_QOS_MIN_ONLINE_CPUS_DEFAULT_VALUE,
-	.default_value = PM_QOS_MIN_ONLINE_CPUS_DEFAULT_VALUE,
-	.type = PM_QOS_MAX,
-};
-
-
-static BLOCKING_NOTIFIER_HEAD(max_online_cpus_notifier);
-static struct pm_qos_object max_online_cpus_pm_qos = {
-	.requests = PLIST_HEAD_INIT(max_online_cpus_pm_qos.requests),
-	.notifiers = &max_online_cpus_notifier,
-	.name = "max_online_cpus",
-	.target_value = PM_QOS_MAX_ONLINE_CPUS_DEFAULT_VALUE,
-	.default_value = PM_QOS_MAX_ONLINE_CPUS_DEFAULT_VALUE,
-	.type = PM_QOS_MIN,
-};
-
-
-static BLOCKING_NOTIFIER_HEAD(cpu_freq_min_notifier);
-static struct pm_qos_object cpu_freq_min_pm_qos = {
-	.requests = PLIST_HEAD_INIT(cpu_freq_min_pm_qos.requests),
-	.notifiers = &cpu_freq_min_notifier,
-	.name = "cpu_freq_min",
-	.target_value = PM_QOS_CPU_FREQ_MIN_DEFAULT_VALUE,
-	.default_value = PM_QOS_CPU_FREQ_MIN_DEFAULT_VALUE,
-	.type = PM_QOS_MAX,
-};
-
-
-static BLOCKING_NOTIFIER_HEAD(cpu_freq_max_notifier);
-static struct pm_qos_object cpu_freq_max_pm_qos = {
-	.requests = PLIST_HEAD_INIT(cpu_freq_max_pm_qos.requests),
-	.notifiers = &cpu_freq_max_notifier,
-	.name = "cpu_freq_max",
-	.target_value = PM_QOS_CPU_FREQ_MAX_DEFAULT_VALUE,
-	.default_value = PM_QOS_CPU_FREQ_MAX_DEFAULT_VALUE,
-	.type = PM_QOS_MIN,
-};
-
-
 static struct pm_qos_object *pm_qos_array[] = {
 	&null_pm_qos,
 	&cpu_dma_pm_qos,
 	&network_lat_pm_qos,
-	&network_throughput_pm_qos,
-	&min_online_cpus_pm_qos,
-	&max_online_cpus_pm_qos,
-	&cpu_freq_min_pm_qos,
-	&cpu_freq_max_pm_qos
+	&network_throughput_pm_qos
 };
 
 static ssize_t pm_qos_power_write(struct file *filp, const char __user *buf,
@@ -188,7 +142,7 @@ static inline int pm_qos_get_value(struct pm_qos_constraints *c)
 	}
 }
 
-static inline s32 pm_qos_read_value(struct pm_qos_constraints *c)
+s32 pm_qos_read_value(struct pm_qos_constraints *c)
 {
 	return c->target_value;
 }
@@ -276,6 +230,21 @@ int pm_qos_request_active(struct pm_qos_request *req)
 EXPORT_SYMBOL_GPL(pm_qos_request_active);
 
 /**
+ * pm_qos_work_fn - the timeout handler of pm_qos_update_request_timeout
+ * @work: work struct for the delayed work (timeout)
+ *
+ * This cancels the timeout request by falling back to the default at timeout.
+ */
+static void pm_qos_work_fn(struct work_struct *work)
+{
+	struct pm_qos_request *req = container_of(to_delayed_work(work),
+						  struct pm_qos_request,
+						  work);
+
+	pm_qos_update_request(req, PM_QOS_DEFAULT_VALUE);
+}
+
+/**
  * pm_qos_add_request - inserts new qos request into the list
  * @req: pointer to a preallocated handle
  * @pm_qos_class: identifies which list of qos request to use
@@ -299,6 +268,7 @@ void pm_qos_add_request(struct pm_qos_request *req,
 		return;
 	}
 	req->pm_qos_class = pm_qos_class;
+	INIT_DELAYED_WORK(&req->work, pm_qos_work_fn);
 	pm_qos_update_target(pm_qos_array[pm_qos_class]->constraints,
 			     &req->node, PM_QOS_ADD_REQ, value);
 }
@@ -325,12 +295,43 @@ void pm_qos_update_request(struct pm_qos_request *req,
 		return;
 	}
 
+	if (delayed_work_pending(&req->work))
+		cancel_delayed_work_sync(&req->work);
+
 	if (new_value != req->node.prio)
 		pm_qos_update_target(
 			pm_qos_array[req->pm_qos_class]->constraints,
 			&req->node, PM_QOS_UPDATE_REQ, new_value);
 }
 EXPORT_SYMBOL_GPL(pm_qos_update_request);
+
+/**
+ * pm_qos_update_request_timeout - modifies an existing qos request temporarily.
+ * @req : handle to list element holding a pm_qos request to use
+ * @new_value: defines the temporal qos request
+ * @timeout_us: the effective duration of this qos request in usecs.
+ *
+ * After timeout_us, this qos request is cancelled automatically.
+ */
+void pm_qos_update_request_timeout(struct pm_qos_request *req, s32 new_value,
+				   unsigned long timeout_us)
+{
+	if (!req)
+		return;
+	if (WARN(!pm_qos_request_active(req),
+		 "%s called for unknown object.", __func__))
+		return;
+
+	if (delayed_work_pending(&req->work))
+		cancel_delayed_work_sync(&req->work);
+
+	if (new_value != req->node.prio)
+		pm_qos_update_target(
+			pm_qos_array[req->pm_qos_class]->constraints,
+			&req->node, PM_QOS_UPDATE_REQ, new_value);
+
+	schedule_delayed_work(&req->work, usecs_to_jiffies(timeout_us));
+}
 
 /**
  * pm_qos_remove_request - modifies an existing qos request
@@ -350,6 +351,9 @@ void pm_qos_remove_request(struct pm_qos_request *req)
 		WARN(1, KERN_ERR "pm_qos_remove_request() called for unknown object\n");
 		return;
 	}
+
+	if (delayed_work_pending(&req->work))
+		cancel_delayed_work_sync(&req->work);
 
 	pm_qos_update_target(pm_qos_array[req->pm_qos_class]->constraints,
 			     &req->node, PM_QOS_REMOVE_REQ,
@@ -434,8 +438,7 @@ static int pm_qos_power_open(struct inode *inode, struct file *filp)
 		pm_qos_add_request(req, pm_qos_class, PM_QOS_DEFAULT_VALUE);
 		filp->private_data = req;
 
-		if (filp->private_data)
-			return 0;
+		return 0;
 	}
 	return -EPERM;
 }
