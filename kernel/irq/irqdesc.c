@@ -317,11 +317,12 @@ int generic_handle_irq(unsigned int irq)
 		return -EINVAL;
 
 	if (unlikely(logging_wakeup_reasons_nosync()))
-		return log_possible_wakeup_reason(irq,
+			log_possible_wakeup_reason(irq,
 				desc,
 				generic_handle_irq_desc);
 
-	return generic_handle_irq_desc(irq, desc);
+		generic_handle_irq_desc(irq, desc);
+		return 0;
 }
 EXPORT_SYMBOL_GPL(generic_handle_irq);
 

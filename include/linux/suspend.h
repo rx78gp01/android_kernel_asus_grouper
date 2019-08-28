@@ -329,6 +329,8 @@ static inline bool system_entering_hibernation(void) { return false; }
 #define PM_RESTORE_PREPARE	0x0005 /* Going to restore a saved image */
 #define PM_POST_RESTORE		0x0006 /* Restore failed */
 
+extern struct mutex pm_mutex;
+
 #ifdef CONFIG_PM_SLEEP
 void save_processor_state(void);
 void restore_processor_state(void);
@@ -393,6 +395,9 @@ static inline int unregister_pm_notifier(struct notifier_block *nb)
 #define pm_notifier(fn, pri)	do { (void)(fn); } while (0)
 
 static inline bool pm_wakeup_pending(void) { return false; }
+
+static inline void lock_system_sleep(void) {}
+static inline void unlock_system_sleep(void) {}
 #endif /* !CONFIG_PM_SLEEP */
 
 #ifdef CONFIG_PM_AUTOSLEEP
@@ -405,28 +410,5 @@ void queue_up_suspend_work(void);
 static inline void queue_up_suspend_work(void) {}
 
 #endif /* !CONFIG_PM_AUTOSLEEP */
-
-extern struct mutex pm_mutex;
-
-#ifndef CONFIG_HIBERNATE_CALLBACKS
-static inline void lock_system_sleep(void) {}
-static inline void unlock_system_sleep(void) {}
-
-#else
-
-/* Let some subsystems like memory hotadd exclude hibernation */
-
-static inline void lock_system_sleep(void)
-{
-	freezer_do_not_count();
-	mutex_lock(&pm_mutex);
-}
-
-static inline void unlock_system_sleep(void)
-{
-	mutex_unlock(&pm_mutex);
-	freezer_count();
-}
-#endif
 
 #endif /* _LINUX_SUSPEND_H */
