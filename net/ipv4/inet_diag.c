@@ -870,7 +870,7 @@ static int inet_diag_rcv_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
 		}
 		{
 			struct netlink_dump_control c = {
-				.dump = inet_diag_dump_compat,
+				.dump = inet_diag_dump,
 			};
 			return netlink_dump_start(sock_diag_nlsk, skb, nlh, &c);
 		}
@@ -905,36 +905,6 @@ static struct sock_diag_handler inet6_diag_handler = {
 
 static struct sock_diag_handler *sock_diag_handlers[AF_MAX];
 static DEFINE_MUTEX(sock_diag_table_mutex);
-
-int sock_diag_register(struct sock_diag_handler *hndl)
-{
-	int err = 0;
-
-	if (hndl->family > AF_MAX)
-		return -EINVAL;
-
-	mutex_lock(&sock_diag_table_mutex);
-	if (sock_diag_handlers[hndl->family])
-		err = -EBUSY;
-	else
-		sock_diag_handlers[hndl->family] = hndl;
-	mutex_unlock(&sock_diag_table_mutex);
-
-	return err;
-}
-
-void sock_diag_unregister(struct sock_diag_handler *hnld)
-{
-	int family = hnld->family;
-
-	if (family > AF_MAX)
-		return;
-
-	mutex_lock(&sock_diag_table_mutex);
-	BUG_ON(sock_diag_handlers[family] != hnld);
-	sock_diag_handlers[family] = NULL;
-	mutex_unlock(&sock_diag_table_mutex);
-}
 
 static inline struct sock_diag_handler *sock_diag_lock_handler(int family)
 {
